@@ -6,6 +6,11 @@ project(Caffe C CXX)
 # ---[ Using cmake scripts and modules
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
 
+# TT:160225 linking in MLopen 
+message(STATUS "Pulling in apcLibs as MLopen") 
+add_subdirectory(/repo/stt/apcLibs /repo/stt/MLopen)
+message(STATUS "Done MLopen")
+
 include(ExternalProject)
 
 include(cmake/Utils.cmake)
@@ -15,14 +20,14 @@ include(cmake/Summary.cmake)
 include(cmake/ConfigGen.cmake)
 
 # ---[ Options
-caffe_option(CPU_ONLY  "Build Caffe without CUDA support" OFF) # TODO: rename to USE_CUDA
+caffe_option(CPU_ONLY  "Build Caffe without CUDA support" ON) # TODO: rename to USE_CUDA
 caffe_option(USE_CUDNN "Build Caffe with cuDNN libary support" ON IF NOT CPU_ONLY)
 caffe_option(BUILD_SHARED_LIBS "Build shared libraries" ON)
-caffe_option(BUILD_python "Build Python wrapper" ON)
+caffe_option(BUILD_python "Build Python wrapper" OFF) # TT: off for initial build
 set(python_version "2" CACHE STRING "Specify which python version to use")
 caffe_option(BUILD_matlab "Build Matlab wrapper" OFF IF UNIX OR APPLE)
 caffe_option(BUILD_docs   "Build documentation" ON IF UNIX OR APPLE)
-caffe_option(BUILD_python_layer "Build the Caffe python layer" ON)
+caffe_option(BUILD_python_layer "Build the Caffe python layer" OFF) # TT: ditto
 
 # ---[ Dependencies
 include(cmake/Dependencies.cmake)
