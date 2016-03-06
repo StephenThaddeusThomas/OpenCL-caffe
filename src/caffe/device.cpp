@@ -126,8 +126,10 @@ void Device::BuildProgram(std::string kernel_dir) {
   std::string strSource = "";
   DIR *ocl_dir;
   struct dirent *dirp;
+
+  printf("Device::BuildProgram:%i %s\n",__LINE__,kernel_dir.c_str());
   if ((ocl_dir = opendir(kernel_dir.c_str())) == NULL) {
-    fprintf(stderr, "Err: Open ocl dir failed!\n");
+    fprintf(stderr, "Err: Open ocl dir {%s} failed Missing !\n",kernel_dir.c_str());
   }
   while ((dirp = readdir(ocl_dir)) != NULL) {
     //Ignore hidden files
