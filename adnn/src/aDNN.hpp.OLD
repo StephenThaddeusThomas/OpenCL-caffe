@@ -1,0 +1,1387 @@
+/**********************************************************************
+Copyright ©2015 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+	Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+	Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or
+        other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+********************************************************************/
+
+
+#ifndef ADNN_H_
+#define ADNN_H_
+
+// TEMP
+// TT: CAN'T FIND #include "aLibDNN.h"
+// TT: CAN'T FIND #include "aLibDNN.hpp"
+// TT: CAN'T FIND #include <aLibDNN/vx_lib_adnn_e.h>
+
+/**
+ */
+namespace adnn
+{
+  enum { ADNN_SUCCESS = 0,
+	 ADNN_GENERAL_FAILURE = -1 };
+
+  enum { ADNN_RUN_ANY,
+	 ADNN_RUN_HOST_ONLY,
+	 ADNN_RUN_ACCEL };
+
+  typedef
+  enum { ADNN_OBJECT_GENERIC,
+	 ADNN_OBJECT_LIBRARY,
+	 ADNN_OBJECT_DNET,
+	 ADNN_OBJECT_DNETLAYER,
+	 ADNN_OBJECT_TENSOR,
+	 ADNN_OBJECT_OCLKERNEL,
+	 ADNN_OBJECT_TOTAL 
+       } ANN_OBJECT_TYPE;
+
+  typedef
+  enum { ANN_TENSOR_WIDTH,
+	 ANN_TENSOR_HEIGHT,
+	 ANN_TENSOR_DEPTH,
+	 ANN_TENSOR_4THDIM,
+       } ANN_TENSOR_DIM;
+
+  // forward decl
+  class CDNN_Dnet;		// What is ??
+  class CDNN_OVX;		// ??
+  class CDNN_Object;		// ??
+  class CDNN_Dnet_layer;	// ??
+
+
+  //  Utility riutines
+  double CalculateErr(aDType c_val, aDType g_val);
+
+  const CDNN_Object * findUniqString(const std::map<std::string, const CDNN_Object *> & m, const std::string & str);
+  const CDNN_Object * findUniqString(      std::map<std::string, const CDNN_Object *> & m, const std::string & str);
+
+  int addUniqString(std::map<std::string, const CDNN_Object *> & m, const std::string & str, const CDNN_Object * obj);
+
+  // Return the current learning rate. The currently implemented learning rate
+  // policies are as follows:
+  //    - fixed: always return base_lr.
+  //    - step: return base_lr * gamma ^ (floor(iter / step))
+  //    - exp: return base_lr * gamma ^ iter
+  //    - inv: return base_lr * (1 + gamma * iter) ^ (- power)
+  // where base_lr, gamma, step and power are defined in the solver parameter
+  // protocol buffer, and iter is the current iteration.
+
+  template <typename _T>
+  _T getLearningRate(adnn_lr_policy_params & l_policy, size_t counter)
+  {
+    _T rate = 0;
+
+    switch (l_policy.policy)
+      {
+      case ALIBDNN_LP_FIXED:
+	rate = (_T)l_policy.base;
+	break;
+      case ALIBDNN_LP_LINEAR:
+	rate = (_T)(l_policy.base + l_policy.slope * counter);
+	break;
+      case ALIBDNN_LP_EXP_STEP:
+	int current_step = counter / l_policy.step;
+	rate = (_T)(l_policy.base * pow(l_policy.gamma, current_step));
+	break;
+      case ALIBDNN_LP_EXP:
+	rate = (_T)(l_policy.base * pow(l_policy.gamma, counter));
+	break;
+      case ALIBDNN_LP_EXP_INV:
+	rate = (_T)(l_policy.base * pow((Dtype)1 + l_policy.gamma *  counter, -l_policy.power));
+	break;
+      default:
+	printf("ERROR: unknown learning policy %d\n", l_policy.policy);
+	break;
+      }
+    return rate;
+  }
+
+  class CDNN_Object 
+  {
+  public:
+    CDNN_Object();
+    CDNN_Object(CDNN_Object * parent, void * wrapper, std::string name, ANN_OBJECT_TYPE type, CDNN_Object * ref_obj = NULL);
+    CDNN_Object(const CDNN_Object & _copy)
+    {
+      *this = _copy;  // do we really want to duplicate reference ?? - if so shouldn't we have a instance_counter
+    }
+
+    CDNN_Object & operator = (const CDNN_Object & _copy)
+    {
+      parent_ = _copy.parent_;
+      wrapper_ = _copy.wrapper_;
+      name_ = _copy.name_;
+      type_ = _copy.type_;
+      ref_obj_ = _copy.ref_obj_;
+      return(*this);
+    }
+
+    virtual ~CDNN_Object(void);
+
+    inline const std:: string & getName(void) const // TT: inline not required in .hpp 
+    {
+      return(name_);
+    }
+
+    inline void setName(const std:: string & name)    {      name_ = name;    }
+    inline ANN_OBJECT_TYPE getType(void) const    {      return(type_);    }
+    inline CDNN_Object & getParent(void) const    {      return(*parent_);    }
+    inline void * getWarpper(void)    {      return(wrapper_);    }
+    inline void setParent(const CDNN_Object * parent)    {      parent_ = (CDNN_Object *)parent;    }		
+    inline void setWarpper(void * wrapper)    {      wrapper_ = wrapper;    }
+    inline CDNN_Object & getRefObj(void) const    {      return(*ref_obj_);    }
+    inline void setRefObj(const CDNN_Object * ref_obj)    {      ref_obj_ = (CDNN_Object *)ref_obj;    }
+
+    // ?? How does this work 
+    void attachObj(void *obj);
+    void removeObj(void *obj);
+
+  protected:
+    
+    CDNN_Object * parent_;
+    void * wrapper_;		// what is a 'wrapper' 
+    std:: string name_;
+    CDNN_Object * ref_obj_;
+    ANN_OBJECT_TYPE type_;
+    std::vector<void *> objs_;
+
+    int cleanUp(void);
+  };
+
+  template<typename _T>
+  class CDNN_Tensor : public CDNN_Object
+  {
+  public:
+    CDNN_Tensor():CDNN_Object()
+    {
+      inited_ = 0;
+      type_ = ADNN_OBJECT_TENSOR;
+      dim_ = 0;
+      dim_ln_ = NULL;
+      size_ = 0;
+      size_bytes_ = 0;
+      stride_ = 0;
+      ocl_buffer_ = 0;
+    }
+
+    CDNN_Tensor(CDNN_Object * parent, void * wrapper, std::string name, int dim, size_t * dim_ln)
+      :  CDNN_Object(parent, wrapper, name, ADNN_OBJECT_TENSOR)
+    {
+      inited_ = 0;
+      dim_ = 0;
+      dim_ln_ = 0;
+      size_ = 0;
+      size_bytes_ = 0;
+      stride_ = 0;
+      ocl_buffer_ = 0;
+      initTensor(dim, dim_ln);
+    }
+
+    CDNN_Tensor(CDNN_Object * parent, void * wrapper, std::string name, size_t X = 0, size_t Y = 1, size_t Z = 1, size_t W = 1)
+      : CDNN_Object(parent, wrapper, name, ADNN_OBJECT_TENSOR)
+    {
+      inited_ = 0;
+      dim_ = 0;
+      dim_ln_ = NULL;
+      size_ = 0;
+      size_bytes_ = 0;
+      stride_ = 0;
+      ocl_buffer_ = 0;
+
+      if (X > 0)
+	{
+	  int dim = 4;
+	  size_t dim_ln[4];
+	  dim_ln[ANN_TENSOR_WIDTH] = X;
+	  dim_ln[ANN_TENSOR_HEIGHT] = Y;
+	  dim_ln[ANN_TENSOR_DEPTH] = Z;
+	  dim_ln[ANN_TENSOR_4THDIM] = W;
+	  
+	  initTensor(dim, dim_ln);
+	}
+    }
+
+    inline int IsInited(void) const
+    {
+      return(inited_);
+    }
+
+    inline int IsAllocated(uint flags = 0) const
+    {
+      return(inited_ && ocl_buffer_ && ((!(flags & _CBUF_MEM_SYS_ONLY) && ocl_buffer_->getCLMem() != NULL) || ((flags & _CBUF_MEM_SYS_ONLY) && ocl_buffer_->getSysMem() != NULL)));
+    }
+
+    int allocTensor(uint flags = 0, _T * data_ptr = 0)
+    {
+      int ret = ADNN_SUCCESS;
+      if (!IsAllocated(flags))
+	{
+	  ocl_buffer_ = new CABuf<_T>;
+	  ocl_buffer_->create(size_, flags, data_ptr);
+	}
+      return(ret);
+    }
+
+    void setTensorInitialValue(_T value)
+    {
+      _T *t_ptr = accessTensor(CL_MAP_WRITE_INVALIDATE_REGION);
+      assert(t_ptr);
+      size_t sz = getSize();
+      for (size_t i = 0; i < sz; ++i)
+	{
+	  t_ptr[i] = value;
+	}
+      commitTensor();
+    }
+
+    void deepCopyBlob(CDNN_Tensor<_T> & source)
+    {
+      assert(getSizeInBytes() == source.getSizeInBytes()); // ?? where is assert.h included
+      _T *t_ptr = accessTensor(CL_MAP_WRITE_INVALIDATE_REGION);
+      _T *s_ptr = source.accessTensor(CL_MAP_READ);
+      assert(t_ptr && s_ptr);
+      memcpy(t_ptr, s_ptr, getSizeInBytes());
+      commitTensor();
+      source.commitTensor();
+    }
+
+    _T * accessTensor(uint flags = 0)
+    {
+      _T * ret = NULL;
+      allocTensor((ocl_buffer_) ? ocl_buffer_->getFlags() : 0);
+      ret = ocl_buffer_->map(flags);
+      return(ret);
+    }
+
+    void commitTensor(void)
+    {
+      ocl_buffer_->unmap();
+    }
+
+    _T * getHostTensor(void)
+    {
+      _T * ret = NULL;
+      ret = ocl_buffer_->getSysMem();
+      return(ret);
+    }
+
+    int writeTensor(_T * data_ptr = NULL, size_t sz = -1)
+    {
+      int ret = ADNN_SUCCESS;
+// TODO: could be aligned!!
+      sz = (!data_ptr)? 0 : sz;
+      ret = ocl_buffer_->copyToDevice(0, data_ptr, sz);
+      return(ret);
+    }
+
+    int readTensor(void)
+    {
+      int ret = ADNN_SUCCESS;
+// TODO: coud be aligned!!
+//    sz = (!data_ptr)? 0 : sz;
+      ret = ocl_buffer_->copyToHost();
+      return(ret);
+    }
+
+    ~CDNN_Tensor(void)
+    {
+      if ( ocl_buffer_ )
+	{
+	  delete ocl_buffer_;
+	  ocl_buffer_ = 0;
+	}
+
+      if (dim_ln_)
+	{
+	  delete [] dim_ln_;
+	  dim_ln_ = NULL;
+	}
+
+      if ( stride_)
+	{
+	  delete [] stride_;
+	  stride_ = 0;
+	}
+    }
+
+    cl_mem getCLMem(void)
+    {
+      return(ocl_buffer_->getCLMem());
+    }
+
+    const CDNN_Tensor<_T> & mul2(CDNN_Tensor<_T> &  tA, CDNN_Tensor<_T> & tB, int traspose_A = (int)clblasNoTrans, int transposeB = (int)clblasNoTrans, _T alpha = 1, _T beta = 0)
+    {
+      cl_event event;
+      clblasOrder order = clblasRowMajor;
+      clblasTranspose transA = (clblasTranspose)traspose_A;
+
+      // inputs
+      size_t a_cols =  tA.getDim(ANN_TENSOR_WIDTH) * tA.getDim(ANN_TENSOR_HEIGHT) * tA.getDim(ANN_TENSOR_DEPTH);
+      size_t a_rows =  tA.getDim(ANN_TENSOR_4THDIM);
+
+      //weights
+      size_t b_cols =  tB.getDim(ANN_TENSOR_WIDTH);
+      size_t b_rows =  tB.getDim(ANN_TENSOR_HEIGHT);
+
+      // outputs
+      size_t c_cols =  getDim(ANN_TENSOR_WIDTH) * getDim(ANN_TENSOR_HEIGHT) * getDim(ANN_TENSOR_DEPTH);
+      size_t c_rows =  getDim(ANN_TENSOR_4THDIM);
+
+      CDNN_Tensor<_T> * running_C = this;
+      size_t lda = a_cols;       /* i.e. lda = K */
+      clblasTranspose transB = (clblasTranspose)transposeB;
+      size_t ldb = b_cols;        /* i.e. ldb = N */
+      size_t ldc = c_cols;        /* i.e. ldc = N */
+      cl_mem bufA = tA.getCLMem();
+      cl_mem bufB = tB.getCLMem();
+      cl_mem bufC = running_C->getCLMem();
+      cl_command_queue runningQ = getaDNNOCL().getClQueue();
+
+      /* Call clblas extended function. Perform gemm for the lower right sub-matrices */
+      int ret = clblasSgemm(order, transA, transB,
+			    a_rows, b_cols, a_cols,
+			    alpha, bufA, 0, lda,
+			    bufB, 0, ldb, beta,
+			    bufC, 0, ldc,
+			    1, &runningQ, 0, NULL, &event);
+      if (ret != CL_SUCCESS) {
+	printf("clblasSgemmEx() failed with %d\n", ret);
+	ret = 1;
+      }
+      else {
+	/* Wait for calculations to be finished. */
+#if 0
+	ret = clWaitForEvents(1, &event);
+	clReleaseEvent(event);
+#endif
+      }
+      return(*this);
+    }
+
+    const CDNN_Tensor<_T> & mul2(size_t c_cols, size_t c_rows,
+				 CDNN_Tensor<_T> &  tA, size_t a_cols, size_t a_rows,
+				 CDNN_Tensor<_T> & tB, size_t b_cols, size_t b_rows,
+				 int traspose_A = (int)clblasNoTrans, int transpose_B = (int)clblasNoTrans, _T alpha = 1, _T beta = 0)
+    {
+      cl_event event;
+
+      CDNN_Tensor<_T> * running_C = this;
+
+      clblasOrder order = clblasRowMajor;
+      clblasTranspose transA = (clblasTranspose)traspose_A;
+
+      // inputs
+//	size_t a_cols = tA.getDim(ANN_TENSOR_WIDTH) * tA.getDim(ANN_TENSOR_HEIGHT) * tA.getDim(ANN_TENSOR_DEPTH);
+//	size_t a_rows = tA.getDim(ANN_TENSOR_4THDIM);
+
+      //weights
+//	size_t b_cols = tB.getDim(ANN_TENSOR_WIDTH);
+//	size_t b_rows = tB.getDim(ANN_TENSOR_HEIGHT);
+
+      // outputs
+//	size_t c_cols = getDim(ANN_TENSOR_WIDTH) * getDim(ANN_TENSOR_HEIGHT) * getDim(ANN_TENSOR_DEPTH);
+//	size_t c_rows = getDim(ANN_TENSOR_4THDIM);
+
+      size_t lda = a_cols;       /* i.e. lda = K */
+      clblasTranspose transB = (clblasTranspose)transpose_B;
+      size_t ldb = b_cols;        /* i.e. ldb = N */
+      size_t ldc = c_cols;        /* i.e. ldc = N */
+      cl_mem bufA = tA.getCLMem();
+      cl_mem bufB = tB.getCLMem();
+      cl_mem bufC = running_C->getCLMem();
+      cl_command_queue runningQ = getaDNNOCL().getClQueue();
+
+      /* Call clblas extended function. Perform gemm for the lower right sub-matrices */
+      size_t run_a_rows = (traspose_A) ? a_cols : a_rows;
+      size_t run_a_cols = (traspose_A) ? a_rows : a_cols;
+      size_t run_b_cols = (transpose_B) ? b_rows : b_cols;
+      int ret = clblasSgemm(order, transA, transB,
+			    run_a_rows, run_b_cols, run_a_cols,
+			    alpha, bufA, 0, lda,
+			    bufB, 0, ldb, beta,
+			    bufC, 0, ldc,
+			    1, &runningQ, 0, NULL, &event);
+      if (ret != CL_SUCCESS) {
+	printf("clblasSgemmEx() failed with %d\n", ret);
+	ret = 1;
+      }
+      else {
+	/* Wait for calculations to be finished. */
+#if 0
+	ret = clWaitForEvents(1, &event);
+	clReleaseEvent(event);
+#endif
+      }
+      return(*this);
+    }
+
+    int initTensor(int dim, size_t * dim_ln)
+    {
+      int ret = ADNN_SUCCESS;
+      dim_ = dim;
+      if ( dim_ > 0 )
+	{
+	  if (!dim_ln_)
+	    {
+	      dim_ln_ = new size_t[dim_];
+	    }
+
+	  for(int i = 0; i < dim_; i++)
+	    {
+	      dim_ln_[i] = (dim_ln) ? dim_ln[i] : 1;
+	    }
+
+	  stride_ = new size_t[dim_];
+// stride of width is always multiple of 4
+	  stride_[0] = dim_ln_[0]; // ((dim_ln_[0] + 3) / 4) * 4; //sizeof(_T);
+	  for(int i = 1; i < dim_; i++)
+	    {
+	      stride_[i] = stride_[i-1] * dim_ln_[i];
+	    }
+	  size_ = stride_[dim_-1];
+	  size_bytes_ = size_ * sizeof(_T);
+	  inited_ = 1;
+	}
+      return(ret);
+    }
+
+    int initTensor(const CDNN_Tensor<_T> & _copy)
+    {
+      int ret = ADNN_SUCCESS;
+      *(CDNN_Object*)this = *(CDNN_Object*)&_copy;
+      if ( _copy.IsInited() )
+	{
+	  initTensor(_copy.dim_, _copy.dim_ln_);
+	}
+      return(ret);
+    }
+    
+    inline size_t getSize(void) const    {      return(size_);    }
+    inline size_t getSizeInBytes(void) const    {      return(size_bytes_);    }
+    inline int getNDim(void) const    {      return(dim_);    }
+    inline size_t * getDims(void) const    {      return(dim_ln_);    }    
+
+    inline size_t getDim(int dim) const
+    {
+      size_t dim_ln = 0;
+      if ( dim < dim_ )
+	{
+	  dim_ln = dim_ln_[dim];
+	}
+      return(dim_ln);
+    }
+
+    inline size_t getStride(int dim) const
+    {
+      size_t stride = 0;
+      if ( dim < dim_ )
+	{
+	  stride = stride_[dim];
+	}
+      return(stride);
+    }
+
+  protected:
+
+    int inited_;
+    int dim_;
+    size_t * dim_ln_;
+    size_t size_;
+    size_t size_bytes_;
+    size_t * stride_;
+    CABuf<_T> * ocl_buffer_;
+  };
+
+
+  class CLibDNN;
+  class CDNN_Dnet;
+
+  class CLibDNN : public CDNN_Object
+  {
+  public:
+    CLibDNN(void);
+    ~CLibDNN(void);
+    CLibDNN(void * wrapper, std::string name, cl_context context, cl_device_type accel_type, const std::string & accel_platform, std::string const & ocl_kernels_path);
+
+    int Init(void);
+
+    inline CaLibsOCL & getOCL(void) const
+    {
+      return (*ocl_);
+    }
+
+  protected:
+
+    int cleanUp(void);
+    CaLibsOCL * ocl_;
+  };
+
+
+
+///////////////////////////////////////////////////////
+//
+// DNN_OCL_kern_exe
+//
+//////////////////////////////////////////////////////
+
+  typedef std::pair<size_t, void*> ocl_arg;
+  typedef std::map<int, ocl_arg> ocl_args;
+  typedef std::vector<cl_event> ocl_wait_events;
+
+  class CDNN_OCL_kern_exe : public CDNN_Object
+  {
+  public:
+    CDNN_OCL_kern_exe();
+    CDNN_OCL_kern_exe(CDNN_Object * parent, std::string name,
+		      std::string file_nm = "", std::string build_options = "",
+		      cl_kernel ocl_kern = 0,
+		      std::vector<size_t> * glb_sz = NULL,
+		      std::vector<size_t> * lcl_sz = NULL,
+		      ocl_args * args = NULL,
+		      cl_command_queue queue = NULL);
+    
+    CDNN_OCL_kern_exe(const CDNN_OCL_kern_exe & copy);
+    ~CDNN_OCL_kern_exe();
+
+    int CDNN_OCL_kern_exe::ExecuteNoWait(ocl_args * args = NULL,cl_command_queue queue = 0);
+
+    inline const std::string & getKernFileNm(void) const
+    {
+      return(kern_src_file_);
+    }
+    
+    inline const std::string & getKernNm(void) const
+    {
+      return(kern_nm_);
+    }
+
+    inline const std::string & getKernSrcSring(void) const
+    {
+      return(kern_src_string_);
+    }
+
+    inline const std::string & getKernBuildOptions(void) const
+    {
+      return(kern_build_options_);
+    }
+
+    inline void setKernBuildOptions(const std::string & build_optins)
+    {
+      kern_build_options_ = build_optins;
+    }
+
+    inline const ocl_args & getKernArgs(void) const
+    {
+      return(args_);
+    }
+
+    inline void setKernArgs(const ocl_args & args)
+    {
+      args_ = args;
+    }
+
+    inline cl_kernel getOclKern(void) const
+    {
+      return(kernel_);
+    }
+
+    inline void setOclKern(cl_kernel kernel)
+    {
+      kernel_ = kernel;
+    }
+
+    inline const std::vector<size_t> & getLclSize(void) const
+    {
+      return(lcl_sz_);
+    }
+
+    inline void setLclSize(const std::vector<size_t> & lcl_sz)
+    {
+      lcl_sz_ = lcl_sz;
+    }
+
+    inline const std::vector<size_t> & getGblSize(void) const
+    {
+      return(glb_sz_);
+    }
+
+    inline void setGblSize(const std::vector<size_t> & gbl_sz)
+    {
+      glb_sz_ = gbl_sz;
+    }
+
+    inline cl_command_queue getOclQueue(void) const
+    {
+      return(queue_);
+    }
+
+    inline void setOclQueue(cl_command_queue queue)
+    {
+      queue_ = queue;
+    }
+
+    inline const ocl_wait_events & getWaitEvents(void) const
+    {
+      return(wait_events_);
+    }
+
+    inline cl_event getComplEvent(void) const
+    {
+      return(completion_event_);
+    }
+
+  protected:
+
+    std::string kern_src_file_;
+    std::string kern_nm_;
+    std::string kern_src_string_;
+    std::string kern_build_options_;
+    ocl_args    args_;
+    cl_kernel   kernel_;
+    
+    std::vector<size_t> lcl_sz_;
+    std::vector<size_t> glb_sz_;
+    
+    cl_command_queue    queue_;
+    cl_event            completion_event_;
+    ocl_wait_events     wait_events_;
+  };
+
+///////////////////////////////////////////////////////
+//
+// DNN_Dnet_layer
+//
+//////////////////////////////////////////////////////
+
+  typedef std::vector<CDNN_OCL_kern_exe> layer_ocl_exe;
+
+  class CDNN_Dnet_layer;
+  class CDNN_Dnet_layer : public CDNN_Object
+  {
+  public:
+    CDNN_Dnet_layer():CDNN_Object()
+    {
+      n_passes_ = 0;
+      n_iter_ = 1;
+      n_out_pix_horiz_ = 1;
+      n_out_pix_vert_ = 1;
+      ocl_group_sz0_ = 8;
+      ocl_group_sz1_ = 8;
+      ocl_group_lg2sz0_ = 3;
+      ocl_group_lg2sz1_ = 3;
+      n_outs_ = 1;
+      
+      do_timing_ = false;
+      processing_time_ = 0;
+      out_messages_ = true;
+    }
+
+    CDNN_Dnet_layer(CDNN_Object * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);
+
+    ~CDNN_Dnet_layer();
+
+    const aDNNode & getNode (void) const
+    {
+      return (*(aDNNode*)wrapper_);
+    }
+
+    inline ALIBDNN_NODE_TYPE getType(void) const
+    {
+      return(getNode().getType());
+    }
+
+// name from the input definition
+
+    inline const std::string &  getTop(void) const
+    {
+      return(getName());
+    }
+
+    inline const std::string &  getBottom(void) const
+    {
+      return(getNode().inputs_[0].getName());
+    }
+	
+    inline bool IsFirstLayer(void) const
+    {
+      return(!getNode().inputs_[0].getName().compare(""));
+    }
+    
+    inline bool IsLastLayer(void) const
+    {
+      return(!getTop().compare(""));
+    }
+
+// generated names
+    inline const std::string &  getTopName(void) const
+    {
+      const std::string & ret = ((!getTop().compare("")) ? getName() : getTop());
+      return(ret);
+    }
+
+    inline const std::string &  getBotName(void) const
+    {
+      const std::string & ret = ((!getBottom().compare("")) ? getName() : getBottom());
+      return(ret);
+    }
+
+    inline std::string   getTopNameFwd(void) const
+    {
+      std::string ret = getTopName() + ".fwd";
+      return(ret);
+    }
+
+    inline std::string getBotNameFwd(void) const
+    {
+      std::string ret = getTopName() + ".fwd";
+      return(ret);
+    }
+
+    inline std::string   getTopNameBwd(void) const
+    {
+      std::string ret = getTopName() + ".bwd";
+      return(ret);
+    }
+
+    inline std::string getBotNameBwd(void) const
+    {
+      std::string ret = getTopName() + ".bwd";
+      return(ret);
+    }
+
+// make correct calls
+    inline int getNOutputs(void ) const
+    {
+      return(getNode().outputs_[0].n_output_featuremaps_);
+    }
+
+    inline int getKernelSz(int input_index = 0 ) const
+    {
+      return(getNode().inputs_[input_index].weights_params_.filter_params.filter[0].size);
+    }
+
+    inline int getPad(int input_index = 0) const
+    {
+      return(getNode().inputs_[input_index].weights_params_.filter_params.filter[0].pad);
+    }
+
+    inline aDType getPaddingVal(void) const
+    {
+      return(0);
+    }
+
+    inline int getStep(int input_index = 0) const
+    {
+      return(getNode().inputs_[input_index].weights_params_.filter_params.filter[0].stride);
+    }
+
+    inline const adnn_filter1D & getFilterParams(int input_index = 0) const
+    {
+      return(getNode().inputs_[input_index].weights_params_.filter_params.filter[0]);
+    }
+
+#if 0
+    inline int getLocalArea(void) const
+    {
+      return(parameters_.LRN_parameters.getGetLocalArea());
+    }
+
+    inline int getNormRegion(void) const
+    {
+      return(parameters_.LRN_parameters.getGetNormRegion());
+    }
+
+    inline double getAlphaLRN(void) const
+    {
+      return(parameters_.LRN_parameters.getGetAlpha());
+    }
+
+    inline double getBetaLRN(void) const
+    {
+      return(parameters_.LRN_parameters.getGetBeta());
+    }
+#endif
+
+    inline ALIBDNN_NEURON_TYPE getNeuronType(void) const
+    {
+      return(getNode().neuron_params_.type);
+    }
+
+    inline const adnn_neuron_parameters & getNeuronParams(void) const
+    {
+      return(getNode().neuron_params_);
+    }
+
+    inline const adnn_update_params & getUpdateParams(void) const
+    {
+      return(getNode().update_params_);
+    }
+    
+#if 0
+    inline int getPoolingMethod(void) const
+    {
+      return(parameters_.getPoolingMethod());
+    }
+
+    inline double getNeuronNegSlope(void) const
+    {
+      return(parameters_.ativation_function.getNegSlope());
+    }
+
+    inline void getNeuronPowerArgs(double *ppower, double *pscale, double *pshift) const
+    {
+      return(parameters_.ativation_function.getPowerArgs(ppower,pscale, pshift));
+    }
+
+    inline int getInputWidth( void ) const
+    {
+      return(parameters_.img_width);
+    }
+
+    inline int getInputHeight( void ) const   // TT: was: getInpuHeight
+    {
+      return(parameters_.img_height);
+    }
+
+    inline int getBatchSz( void ) const
+    {
+      return(parameters_.batch_size);
+    }
+
+    inline int getNPasses(void) const
+    {
+      return(n_passes_);
+    }
+    
+    inline double getStd(void) const
+    {
+      return (parameters_.weight_filler.std);
+    }
+
+    inline double getWeightsLr(void) const
+    {
+      return(parameters_.get_weights_lr());
+    }
+
+    inline double getBiasLr(void) const
+    {
+      return(parameters_.get_bias_lr());
+    }
+
+    inline double getWeightsDecay(void) const
+    {
+      return(parameters_.get_weights_decay());
+    }
+
+    inline double getBiasDecay(void) const
+    {
+      return(parameters_.get_bias_decay());
+    }
+
+    inline void setNPasses(int passes)
+    {
+      n_passes_ = passes;
+    }
+#endif
+
+    inline const CDNN_Dnet_layer * getBottomLyr(void) const
+    {
+      return(bottom_lyr_);
+    }
+
+    inline const CDNN_Dnet_layer * getTopLyr(void) const
+    {
+      return(top_lyr_);
+    }
+
+    inline void setBottomLyr(const CDNN_Dnet_layer * lyr) 
+    {
+      bottom_lyr_ = lyr;
+    }
+
+    inline void setTopLyr(const CDNN_Dnet_layer * lyr) 
+    {
+      top_lyr_ = lyr;
+    }
+
+    inline int getNTimingIter(void) const
+    {
+      return(n_iter_);
+    }
+    
+    inline void setNTimingIter(int iter)
+    {
+      n_iter_ = iter;
+    }
+
+    inline void setDoTiming(bool timing)
+    {
+      do_timing_ = timing;
+    }
+
+    inline bool IsDoTiming(void) const
+    {
+      return(do_timing_);
+    }
+
+    inline void setOutMessages(bool messages)
+    {
+      out_messages_ = messages;
+    }
+
+    inline bool IsOutMessages(void) const
+    {
+      return(out_messages_);
+    }
+
+    inline bool IsPerLayerTiming(void) const
+    {
+      return(getNode().per_layer_timing_);
+    }
+    
+    inline bool IsNetTiming(void) const
+    {
+      return(IsPerLayerTiming());
+    }
+    
+    inline bool IsPerLayerMessages(void) const
+    {
+      return(getNode().per_layer_messages_);
+    }
+
+    inline void setProcessingTime(double timing)
+    {
+      processing_time_ = timing;
+    }
+
+    inline double getProcessingTime(void) const
+    {
+      return(processing_time_);
+    }
+    
+    inline size_t getInterCounter(void) const
+    {
+      return(iter_counter_);
+    }
+
+    inline size_t updateInterCounter(size_t step)
+    {
+      size_t ret = iter_counter_;
+      iter_counter_ += step;
+      return(ret);
+    }
+
+    inline size_t setInterCounter(size_t val)
+    {
+      size_t ret = iter_counter_;
+      iter_counter_ = val;
+      return(ret);
+    }
+
+    inline int getNetPerLayerIter(void) const
+    {
+      return(getNode().per_layer_iter_);
+    }
+
+    inline CDNN_Tensor<aDType> & getTopDiff(void) const
+    {
+      return(*top_diff_);
+    }
+
+    inline CDNN_Tensor<aDType> & getBotDiff(void) const
+    {
+      return (*bot_diff_);
+    }
+
+    inline CDNN_Tensor<aDType> &  getTopFwd(void) const
+    {
+      return(*top_fwd_);
+    }
+
+    inline CDNN_Tensor<aDType> &  getBotFwd(void) const
+    {
+      return(*bot_fwd_);
+    }
+
+    inline void setTopDiff(CDNN_Tensor<aDType> * diff)
+    {
+      top_diff_ = diff;
+    }
+
+    inline void setBotDiff(CDNN_Tensor<aDType> * diff)
+    {
+      bot_diff_ = diff;
+    }
+
+    inline void  setTopFwd(CDNN_Tensor<aDType> * data)
+    {
+      top_fwd_ = data;
+    }
+
+    inline void setBotFwd(CDNN_Tensor<aDType> * data)
+    {
+      bot_fwd_ =  data;
+    }
+
+    inline const CDNN_Dnet_layer & getNet(void) const
+    {
+      return(*(CDNN_Dnet_layer*)&getParent());
+    }
+
+    inline int doNeedBackProp(void) const
+    {
+      const adnn_update_params & n_updt_params = getNet().getUpdateParams();
+      const adnn_update_params & l_updt_params = getUpdateParams();
+      return(n_updt_params.weights_lr.base != 0 && l_updt_params.weights_lr.base != 0);
+    }
+
+    inline const std::string & getGenericCompOptions(void) const
+    {
+      return(generic_comp_otions_);
+    }
+
+    int UpdateRates(aDType & local_rate, aDType & local_decay,	aDType layer_learning_rate, aDType layer_weight_decay);
+
+    virtual int getEdgesFwd(CDNN_Object **bot_tens, CDNN_Object **top_tens, bool & run_it);
+    virtual int getEdgesBwd(CDNN_Object **bot_tens, CDNN_Object **top_tens, bool & run_it);
+
+    virtual int Initialize(void);
+    virtual int Deinitialize(void);
+
+    virtual int VerifyInput(void);
+    virtual int VerifyOutput(void);
+
+    virtual int Execute(void);
+    virtual int ExecuteHost(void);
+    virtual int ExecuteBwd(void);
+    virtual int ExecuteBwdHost(void);
+    virtual int Update(void);
+    virtual int UpdateHost(void);
+
+    int addInternal(const std::string & tens, const CDNN_Object * obj);
+    const CDNN_Object* findInternal(const std::string & tens) const;
+
+  protected:
+
+    virtual int internalSetup(void);
+    virtual int internalVerify(void);
+
+    virtual int internalSetupBwd(void);
+    virtual int internalVerifyBwd(void);
+
+    virtual int internalVerifyUpdate(void);
+    
+    int MakeVerificationDouble(const CDNN_Tensor<aDType> & orig);
+    int MakeDoubleInternal(const CDNN_Tensor<aDType> & orig, const std::string d_name, int d_mem_flags);
+
+    int makeBwdDiff(void);
+
+//  struct adnn_node_descr layer_params_;
+
+    std::string generic_comp_otions_;
+
+    std::map<std::string, const CDNN_Object *> internal_;
+    CDNN_Tensor<aDType> *top_diff_;
+    CDNN_Tensor<aDType> *bot_diff_;
+    CDNN_Tensor<aDType> *top_fwd_;
+    CDNN_Tensor<aDType> *bot_fwd_;
+    CDNN_Tensor<aDType> *top_fwd2_;
+    CDNN_Tensor<aDType> *bot_fwd2_;
+    const CDNN_Dnet_layer * bottom_lyr_;
+    const CDNN_Dnet_layer * top_lyr_;
+
+// exec ocl kernels
+    layer_ocl_exe ocl_fwd_execs_;
+    layer_ocl_exe ocl_bwd_execs_;
+
+    std::map<std::string, cl_kernel> cl_kernels_;
+    std::vector<std::string> cl_kerlel_nms_;
+
+    int n_iter_;
+    int n_passes_;
+
+    int n_out_pix_horiz_;
+    int n_out_pix_vert_;
+    int ocl_group_sz0_;
+    int ocl_group_sz1_;
+    int ocl_group_lg2sz0_;
+    int ocl_group_lg2sz1_;
+    int n_out_pix_horiz_bwd_;
+    int n_out_pix_vert_bwd_;
+    int ocl_group_bwd_sz0_;
+    int ocl_group_bwd_sz1_;
+    int ocl_group_bwd_lg2sz0_;
+    int ocl_group_bwd_lg2sz1_;
+
+    int n_outs_;
+
+    bool do_timing_;
+    double processing_time_;
+    size_t iter_counter_;
+
+    bool out_messages_;
+  };
+
+  ///////////////////////////////////////////////////////
+  //
+  // DNN_DNet
+  //
+  //////////////////////////////////////////////////////
+  
+  class CDNN_Dnet : public CDNN_Dnet_layer
+  {
+  public:
+    CDNN_Dnet();
+    CDNN_Dnet(CDNN_Object * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer);
+    ~CDNN_Dnet();
+    void addLayer(CDNN_Dnet_layer & layer);
+
+    int ConnectNodes(void);
+    int buildNet(void);
+    CDNN_Dnet_layer * getNextLayer(CDNN_Dnet_layer * prev);
+    CDNN_Dnet_layer * getRNextLayer(CDNN_Dnet_layer * prev);
+
+    int oclFinish(void);
+
+  protected:
+    std::map<std::string, void*> layers_;
+    std::vector<std::string> net_;
+
+  };
+
+  class CDNN_Dnet_layer_fconnect : public CDNN_Dnet_layer
+  {
+  public:
+    CDNN_Dnet_layer_fconnect() : CDNN_Dnet_layer() {}
+    CDNN_Dnet_layer_fconnect(CDNN_OVX * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);  // ?? Not calling base class constructor >>check.cpp<<
+
+//  int Initialize(void);
+//  int Deinitialize(void);
+
+//  int VerifyInput(void);
+//  int VerifyOutput(void);
+
+    int Execute(void);
+    int ExecuteHost(void);
+
+    int ExecuteBwd(void);
+    int ExecuteBwdHost(void);
+    int Update(void);
+    int UpdateHost(void);
+
+  protected:
+    
+    int internalSetup(void);
+    int internalVerify(void);
+    int internalSetupBwd(void);
+    int internalVerifyBwd(void);
+    int internalVerifyUpdate(void);
+
+    int n_mt_out_pix_horiz_;
+    int n_mt_out_pix_vert_;
+    int ocl_mt_group_sz0_;
+    int ocl_mt_group_sz1_;
+    int ocl_sr_group_sz0_;
+//  int ocl_sr_group_sz1_;
+  };
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////
+  //
+  //   Data -> tensor
+  //
+  //////////////////////////////////////////////////////////////////////////////////////////////
+
+  class CDNN_Dnet_layer_data : public CDNN_Dnet_layer
+  {
+  public:
+    CDNN_Dnet_layer_data() : CDNN_Dnet_layer()	{}
+    CDNN_Dnet_layer_data(CDNN_Object * parent, void * wrapper, std:: string name, const void * parameters);  // ?? Not calling base class constructor ??
+
+//  int Initialize(void);
+//  int Deinitialize(void);
+
+//  int VerifyInput(void);
+//  int VerifyOutput(void);
+
+    int Execute(void);
+
+  protected:
+
+    int internalSetup(void);
+  };
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//		Convolutional 
+//
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+ class CDNN_Dnet_layer_conv : public CDNN_Dnet_layer
+ {
+
+ public:
+   CDNN_Dnet_layer_conv(void);
+   CDNN_Dnet_layer_conv(CDNN_Object * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);
+
+//  int Initialize(void);
+//  int Deinitialize(void);
+
+//  int VerifyInput(void);
+//  int VerifyOutput(void);
+
+   int Execute(void);
+   int ExecuteHost(void);
+   int ExecuteBwd(void);
+   int ExecuteBwdHost(void);
+   int Update(void);
+   int UpdateHost(void);
+
+ protected:
+   
+   int internalSetup(void);
+   int internalVerify(void);
+   int internalSetupBwd(void);
+   int internalVerifyBwd(void);
+   int internalVerifyUpdate(void);
+
+ };
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+ class CDNN_Dnet_layer_pooling : public CDNN_Dnet_layer
+ {
+ public:
+
+   CDNN_Dnet_layer_pooling(void);
+   CDNN_Dnet_layer_pooling(CDNN_OVX * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);
+
+// int Initialize(void);
+// int Deinitialize(void);
+
+// int VerifyInput(void);
+// int VerifyOutput(void);
+
+   int Execute(void);
+   int ExecuteHost(void);
+
+   int ExecuteBwd(void);
+   int ExecuteBwdHost(void);
+
+ protected:
+
+   int internalSetup(void);
+   int internalVerify(void);
+   int internalSetupBwd(void);
+   int internalVerifyBwd(void);
+
+ };
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+class CDNN_Dnet_layer_neuron : public CDNN_Dnet_layer
+{
+public:
+
+  CDNN_Dnet_layer_neuron(void);
+  CDNN_Dnet_layer_neuron(CDNN_OVX * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);
+
+//		int Initialize(void);
+//		int Deinitialize(void);
+
+//		int VerifyInput(void);
+//		int VerifyOutput(void);
+
+  int Execute(void);
+  int ExecuteHost(void);
+  int ExecuteBwd(void);
+  int ExecuteBwdHost(void);
+  
+protected:
+
+  int internalSetup(void);
+  int internalVerify(void);
+  int internalSetupBwd(void);
+  int internalVerifyBwd(void);
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+  class CDNN_Dnet_layer_LRN : public CDNN_Dnet_layer
+  {
+  public:
+
+    CDNN_Dnet_layer_LRN(void);
+    CDNN_Dnet_layer_LRN(CDNN_OVX * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);
+
+//		int Initialize(void);
+//		int Deinitialize(void);
+
+//		int VerifyInput(void);
+//		int VerifyOutput(void);
+
+    int Execute(void);
+    int ExecuteHost(void);
+    int ExecuteBwd(void);
+    int ExecuteBwdHost(void);
+
+  protected:
+
+    int internalSetup(void);
+    int internalVerify(void);
+    int internalSetupBwd(void);
+    int internalVerifyBwd(void);
+
+    aDType ratio_dta_bwd_;
+  };
+
+  ////////////////////////////////////////////////////////////////////////////////////////////////
+  //
+  //
+  //////////////////////////////////////////////////////////////////////////////////////////////
+
+  class CDNN_Dnet_layer_softmax : public CDNN_Dnet_layer
+  {
+  public:
+
+    CDNN_Dnet_layer_softmax(void);
+    CDNN_Dnet_layer_softmax(CDNN_OVX * parent, void * wrapper, std::string name, const void * parameters, CDNN_Dnet_layer * ref_layer = NULL);
+
+    int Execute(void);
+    int ExecuteHost(void);
+
+    inline CDNN_Tensor<aDType> & getLabels(void) const
+    {
+      return(*labels_);
+    }
+
+  protected:
+
+    int internalSetup(void);
+    int internalVerify(void);
+    CDNN_Tensor<aDType> * labels_;
+
+  };
+
+};
+
+
+#endif

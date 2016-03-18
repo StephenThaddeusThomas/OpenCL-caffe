@@ -1,0 +1,4030 @@
+// File: aLibDNNDriver.cpp   The APP (the application which drives the library)
+// Date: Feb 24 2016
+// What: Learning code, to tie it into Caffe (caffe-opencl-AMD/)
+// Auth: Alexander Lyashevsky
+// Edit: Thaddeus Thomas 
+// Proj: AMD Deep Neural Networks 
+
+/*
+ * Copyright (c) 2015 AMD Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and/or associated documentation files (the
+ * "Materials"), to deal in the Materials without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Materials, and to
+ * permit persons to whom the Materials are furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Materials.
+ *
+ * THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+ */
+
+#ifdef WIN32
+  #include "stdafx.h"
+#else  // linux 
+  #include <cstdio>       // this defines malloc also, so commented out the malloc.h below
+  #include <iomanip>
+  #include <cstdlib>
+  #include <cassert>
+  #include <cstring>
+  #include <vector>
+  #include <map>
+  #include <string>
+//#include <malloc.h>    // defines addition non-standard functions like mallinfo(3) malloc_stats(3)
+//Application Specific (these are in stdafx.h) 
+  #include <CL/opencl.h>
+  #include "../src/AMDnn.h"
+  #include "../src/AMDnn.hpp"   // one of these may be gone
+#endif
+
+
+
+static int
+PrepareLRNode(alib_obj aLib,
+	      ADNN_NODE_TYPE type,
+	      const adnn_control_params *layer_control,
+	      const adnn_lrn_parameters *LRN_params,
+	      int batch_sz,
+	      int input_channels,
+	      int input_h,
+	      int input_w,
+	      const char * node_name,
+	      const char *input_name,
+	      ADNN_EDGE_DIR_TYPE input_edge_type,
+	      adata_obj *node_src,
+	      adata_obj *node_sink,
+	      anode_obj *node,
+	      adata_obj *node_bot_df = NULL,
+	      adata_obj *node_top_df = NULL,
+	      bool training = false,
+	      bool inference = true,
+	      adnn_node_parameters *pnode_params = NULL	)
+{
+  int status = 0;
+
+  // convolution layer definition
+
+  adnn_node_parameters  node_params;
+  if (pnode_params)
+    {
+      node_params = *pnode_params;
+    }
+  else
+    {
+      memset(&node_params, 0, sizeof(adnn_node_parameters));
+    }
+  node_params.type = type;
+
+  if (node_name)
+    {
+      node_params.name = node_name;
+    }
+
+  if (layer_control)
+    {
+      node_params.control = *layer_control;
+    }
+  
+  // input
+  node_params.n_input_nodes = (node_params.n_input_nodes == 0) ? 1 : node_params.n_input_nodes;
+  if (input_name)
+    {
+      node_params.inputs[0].name = input_name;
+    }
+
+  node_params.inputs[0].edge_type = input_edge_type;
+  
+  if (LRN_params)
+    {
+      node_params.inputs[0].lrn_parameters = *LRN_params;
+    }
+
+  adnn_data_parameters node_src_params;
+  memset(&node_src_params, 0, sizeof(adnn_data_parameters));
+  node_src_params.data_format = ADNN_DF_FP32;
+  node_src_params.batch_format = ADNN_BF_NCHW;
+  // strides set to 0 means it's a packed tensor
+
+  node_src_params.dims[0] = batch_sz;
+  node_src_params.dims[1] = input_channels;
+  node_src_params.dims[2] = input_h;
+  node_src_params.dims[3] = input_w;
+
+  // src
+  if (inference && node_src)
+    {
+      if (!*node_src)
+	{
+	  *node_src = ADNNDataCreate(aLib, &node_src_params);
+	}
+      node_params.inputs[0].data = *node_src;
+    }
+
+  if (training && node_bot_df)
+    {
+      if (node_src && *node_src && !*node_bot_df)
+	{
+	  *node_bot_df = ADNNDataClone(*node_src, true);
+	}
+      node_params.inputs[0].data_diff = *node_bot_df;
+    }
+
+  // output
+  node_params.n_output_nodes = (node_params.n_output_nodes == 0) ? 1 : node_params.n_output_nodes;
+  
+  if (node_name)
+    {
+      node_params.outputs[0].name = node_name;
+    }
+
+  // TO DO: CHECK LAYOUT. CURRENTLY assumes NCHW
+  if (inference && node_sink)
+    {
+      if (node_src && *node_src && !*node_sink)
+	{
+	  *node_sink = ADNNDataClone(*node_src, true);
+	}
+      node_params.outputs[0].data = *node_sink;
+    }
+
+  if (training && node_top_df)
+    {
+      if (node_sink && *node_sink && !*node_top_df)
+	{
+	  *node_top_df = ADNNDataClone(*node_sink, true);
+	}
+      node_params.outputs[0].data_diff = *node_top_df;
+    }
+
+  // parameters are all fully copied  // TT: fully copied by whom ??
+  // they can go out off scope
+  if (pnode_params)
+    {
+      *pnode_params = node_params;  // TT: is this assignment operator ??  
+    }
+
+  if (node)
+    {
+      *node = ADNNodeCreate(aLib, &node_params);
+    }
+  
+  return(status);
+}
+
+
+static int
+PreparePoolingNode(alib_obj aLib,
+		   ADNN_NODE_TYPE type,
+		   ADNN_POOLING_METHOD method,
+		   const adnn_filter1D_parameters *f_params,
+		   const adnn_control_params *layer_control,
+		   int batch_sz,
+		   int input_channels,
+		   int input_h,
+		   int input_w,
+		   const char * node_name,
+		   const char *input_name,
+		   ADNN_EDGE_DIR_TYPE input_edge_type,
+		   adata_obj *node_src,
+		   adata_obj *node_sink,
+		   anode_obj *node,
+		   adata_obj *node_bot_df = NULL,
+		   adata_obj *node_top_df = NULL,
+		   bool training = false,
+		   bool inference = true,
+		   adnn_node_parameters *pnode_params = NULL)
+{
+  int status = 0;
+ 
+  // convolution layer definition
+
+  adnn_node_parameters  node_params;
+  if (pnode_params)
+    {
+      node_params = *pnode_params;
+    }
+  else
+    {
+      memset(&node_params, 0, sizeof(adnn_node_parameters));
+    }
+
+  node_params.type = type;
+
+  if (node_name)
+    {
+      node_params.name = node_name;
+    }
+
+  if (layer_control)
+    {
+      node_params.control = *layer_control;
+    }
+
+  // input
+  node_params.n_input_nodes = (node_params.n_input_nodes == 0) ? 1 : node_params.n_input_nodes;
+  if (input_name)
+    {
+      node_params.inputs[0].name = input_name;
+    }
+
+  node_params.inputs[0].edge_type = input_edge_type;
+
+
+  // filter setting
+  if (f_params)
+    {
+      node_params.inputs[0].filter_params.n_dims = 2;
+      node_params.inputs[0].filter_params.filter[0] = node_params.inputs[0].filter_params.filter[1] = *f_params;
+    }
+
+  // pooling method
+  node_params.inputs[0].pooling_method = method;
+
+  adnn_data_parameters node_src_params;
+  memset(&node_src_params, 0, sizeof(adnn_data_parameters));
+  node_src_params.data_format = ADNN_DF_FP32;
+  node_src_params.batch_format = ADNN_BF_NCHW;
+
+  // strides set to 0 means it's a packed tensor
+
+  node_src_params.dims[0] = batch_sz; // Perhaps we should enumerate these 0, 1, 2, 3 => BATCH_NDX, CHAN_NDX, HEIGHT_NDX, WIDTH_NDX 
+  node_src_params.dims[1] = input_channels;
+  node_src_params.dims[2] = input_h;
+  node_src_params.dims[3] = input_w;
+
+  // src      TT: is 'src' same as 'input' ?? 
+  if (inference && node_src)
+    {
+      if (!*node_src)
+	{
+	  *node_src = ADNNDataCreate(aLib, &node_src_params);
+	}
+      node_params.inputs[0].data = *node_src;    // TT: ?? what is relevance of position/index [0] 
+    }
+
+  if (training && node_bot_df)
+    {
+      if (node_src && *node_src && !*node_bot_df)
+	{
+	  *node_bot_df = ADNNDataClone(*node_src, true);
+	}
+      node_params.inputs[0].data_diff = *node_bot_df;
+    }
+
+  // output
+  node_params.n_output_nodes = (node_params.n_output_nodes == 0) ? 1 : node_params.n_output_nodes;
+
+  if (node_name)
+    {
+      node_params.outputs[0].name = node_name;
+    }
+
+  // TODO: CHECK LAYOUT. CURRENTLY assumes NCHW   TT:?? <<<< what is NCHW 
+  if (inference && node_sink)
+    {
+      if (node_src && *node_src && !*node_sink)
+	{
+	  adnn_data_parameters node_sink_params;
+	  ADNNDataInspect(*node_src, &node_sink_params);
+
+	  int out_width = ((int)node_sink_params.dims[3] + 2 * f_params->pad - f_params->size) / f_params->stride + 1;
+	  int out_height = ((int)node_sink_params.dims[2] + 2 * f_params->pad - f_params->size) / f_params->stride + 1;
+
+	  node_sink_params.dims[2] = out_height;
+	  node_sink_params.dims[3] = out_width;
+
+	  // packed
+	  for (int i = 0; i < 4; ++i)
+	    {
+	      node_sink_params.strides[i] = 0;
+	    }
+	  *node_sink = ADNNDataCreate(aLib, &node_sink_params);
+	}
+      node_params.outputs[0].data = *node_sink;
+    }
+  if (training && node_top_df)
+    {
+      if (!*node_top_df && node_sink && *node_sink)
+	{
+	  *node_top_df = ADNNDataClone(*node_sink, true);
+	}
+      node_params.outputs[0].data_diff = *node_top_df;
+    }
+
+  // parameters are all fully copied
+  // they can go out off scope
+  if (pnode_params)
+    {
+      *pnode_params = node_params;
+    }
+
+  if (node)
+    {
+      *node = ADNNodeCreate(aLib, &node_params);
+    }
+  return(status);
+}
+
+
+static int PrepareConvNode(alib_obj aLib, //         1    ?? 8 or 12 parameters can be passed by register
+	const adnn_control_params *layer_control, // 2    the rest need to be put on stack (or ?? ) and thus incur cost
+	const adnn_filter1D_parameters *f_params, // 3    IS there a way we can group these into a structure and pass
+        int batch_sz,				  // 4    a pointer to the structure ?? 
+	int input_channels,			  // 5
+	int input_h,				  // 6
+	int input_w,				  // 7
+	int n_output_featuremaps,		  // 8
+	const char * node_name,			  // 9
+	const char *input_name,			  // 10
+	ADNN_EDGE_DIR_TYPE input_edge_type,	  // 11
+	adata_obj *node_src,			  // 12
+	adata_obj *node_sink,			  // 13
+	adata_obj *node_weights,		  // 14
+	adata_obj *node_bias,			  // 15
+	anode_obj *node,			  // 16
+	adata_obj *node_bot_df = NULL,		  // 17
+	adata_obj *node_top_df = NULL,		  // 18
+	adata_obj *node_weights_df = NULL,	  // 19
+	adata_obj *node_bias_df = NULL,		  // 20
+	bool training = false,			  // 21
+	bool inference = true,			  // 22
+	adnn_node_parameters *pnode_params = NULL // 23
+	)
+{
+  int status = 0;
+
+  // convolution layer definition
+
+  adnn_node_parameters node_params;
+  if (!pnode_params)
+    {
+      memset(&node_params, 0, sizeof(adnn_node_parameters));
+    }
+  else
+    {
+      node_params = *pnode_params;
+    }
+
+  node_params.type = ADNN_NODE_CONV;
+  
+  if (node_name)
+    {
+      node_params.name = node_name;
+    }
+
+  if (layer_control)
+    {
+      node_params.control = *layer_control;
+    }
+
+  // input
+  node_params.n_input_nodes = (node_params.n_input_nodes == 0) ? 1 : node_params.n_input_nodes;
+  if (input_name)
+    {
+      node_params.inputs[0].name = input_name;
+    }
+
+  node_params.inputs[0].edge_type = input_edge_type;
+
+  adnn_data_parameters node_src_params;
+  memset(&node_src_params, 0, sizeof(adnn_data_parameters));
+  node_src_params.data_format = ADNN_DF_FP32;
+  node_src_params.batch_format = ADNN_BF_NCHW;
+  // strides set to 0 means it's a packed tensor
+
+  node_src_params.dims[0] = batch_sz;
+  node_src_params.dims[1] = input_channels;
+  node_src_params.dims[2] = input_h;
+  node_src_params.dims[3] = input_w;
+
+  // src
+  if (inference && node_src)
+    {
+      if (!*node_src)
+	{
+	  *node_src = ADNNDataCreate(aLib, &node_src_params);
+	}
+      node_params.inputs[0].data = *node_src;
+
+      ADNNDataInspect(*node_src, &node_src_params);
+
+      // filter setting
+      node_params.inputs[0].filter_params.n_dims = 2;   // TT: why is this hard-coded 
+      node_params.inputs[0].filter_params.filter[0] = node_params.inputs[0].filter_params.filter[1] = *f_params;
+
+      // weights
+      adnn_data_parameters node_weights_params;
+      memset(&node_weights_params, 0, sizeof(adnn_data_parameters));
+      node_weights_params.batch_format = ADNN_BF_HW;
+
+      node_weights_params.dims[0] = n_output_featuremaps;
+      node_weights_params.dims[1] = node_src_params.dims[1] * f_params->size * f_params->size; // + BIAS TO DO: SEPARATE Bias
+
+      if (node_weights)
+	{
+	  if (!*node_weights)
+	    {
+	      *node_weights = ADNNDataCreate(aLib, &node_weights_params);
+	    }
+	  node_params.inputs[0].weights = *node_weights;
+	}
+
+      // bias
+      adnn_data_parameters node_bias_params;
+      memset(&node_bias_params, 0, sizeof(adnn_data_parameters));
+      node_bias_params.batch_format = ADNN_BF_W;
+
+      node_bias_params.dims[0] = n_output_featuremaps;
+
+      if (inference && node_bias)
+	{
+	  if (!*node_bias)
+	    {
+	      *node_bias = ADNNDataCreate(aLib, &node_bias_params);
+	    }
+	  node_params.inputs[0].bias = *node_bias;
+	}
+    }
+  if (training)
+    {
+      if (node_bot_df)
+	{
+	  if (!*node_bot_df)
+	    {
+	      *node_bot_df = ADNNDataClone(*node_src, true);
+	    }
+	  node_params.inputs[0].data_diff = *node_bot_df;
+	}
+      if (node_weights_df)
+	{
+	  if (!*node_weights_df)
+	    {
+	      *node_weights_df = ADNNDataClone(*node_weights, true);
+	    }
+	  node_params.inputs[0].weights_diff = *node_weights_df;
+	}
+      if (node_bias_df)
+	{
+	  if (!*node_bias_df)
+	    {
+	      *node_bias_df = ADNNDataClone(*node_bias, true);
+	    }
+	  node_params.inputs[0].bias_diff = *node_bias_df;
+	}
+    }
+
+  // output
+  node_params.n_output_nodes = (node_params.n_output_nodes == 0) ? 1 : node_params.n_output_nodes;
+  if (node_name)
+    {
+      node_params.outputs[0].name = node_name;
+    }
+
+  // TO DO: CHECK LAYOUT. CURRENTLY assumes NCHW  <<<< assume this means N (batchnumber) Channel/ColorsComponent Height Width
+  if (inference && node_src && *node_src && node_sink)
+    {
+      adnn_data_parameters node_sink_params;
+      ADNNDataInspect(*node_src, &node_sink_params);
+      // packed    <<<<---- TT: should we check stride first 
+      for (int i = 0; i < 4; ++i)
+	{
+	  node_sink_params.strides[i] = 0;
+	}
+
+      int out_width = ((int)node_sink_params.dims[3] + 2 * f_params->pad - f_params->size) / f_params->stride + 1;
+      int out_height = ((int)node_sink_params.dims[2] + 2 * f_params->pad - f_params->size) / f_params->stride + 1;
+      
+      node_sink_params.dims[1] = n_output_featuremaps;
+      node_sink_params.dims[2] = out_height;
+      node_sink_params.dims[3] = out_width;
+
+      if (!*node_sink)
+	{
+	  *node_sink = ADNNDataCreate(aLib, &node_sink_params);
+	}
+      node_params.outputs[0].data = *node_sink;
+    }
+
+  if (training && node_sink && * node_sink && node_top_df)
+    {
+      if (!*node_top_df)
+	{
+	  *node_top_df = ADNNDataClone(*node_sink, true);
+	}
+      node_params.outputs[0].data_diff = *node_top_df;
+    }
+
+  // parameters are all fully copied
+  // they can go out off scope
+  if (pnode_params)
+    {
+      *pnode_params = node_params;
+    }
+  
+  if (node)
+    {
+      *node = ADNNodeCreate(aLib, &node_params);
+    }
+
+  return(status);
+}
+
+
+static int
+PrepareNeuronNode(alib_obj aLib,
+	const adnn_control_params *node_control,
+	const adnn_neuron_parameters *neuron_params,
+	int batch_sz,
+	int input_channels,
+	int input_h,
+	int input_w,
+	const char *node_name,
+	const char *input_name,
+	ADNN_EDGE_DIR_TYPE input_edge_type,
+	adata_obj *node_src,
+	adata_obj *node_sink,
+	anode_obj *node,
+	adata_obj *node_bot_df = NULL,
+	adata_obj *node_top_df = NULL,
+	bool training = false,
+	bool inference = true,
+	adnn_node_parameters *pnode_params = NULL )
+{
+  int status = 0;
+  adata_obj data_objs[2] = { 0, 0 };
+  adnn_node_parameters  neuron_param;
+
+  if (pnode_params)
+    {
+      neuron_param = *pnode_params;
+    }
+  else
+    {
+      memset(&neuron_param, 0, sizeof(neuron_param));
+    }
+ 
+  // neuron node definition
+  neuron_param.type = ADNN_NODE_NEURON;
+  if (node_name)
+    {
+      neuron_param.name = node_name;
+    }
+  if (node_control)
+    {
+      neuron_param.control = *node_control;
+    }
+  // neuron specific parameters
+  if (neuron_params)
+    {
+      neuron_param.neuron_params = *neuron_params;
+    }
+  // input
+  neuron_param.n_input_nodes = (neuron_param.n_input_nodes == 0) ? 1 : neuron_param.n_input_nodes;
+  if (input_name)
+    {
+      neuron_param.inputs[0].name = input_name;
+    }
+  neuron_param.inputs[0].edge_type = input_edge_type;
+
+  adnn_data_parameters node_src_params;
+  memset(&node_src_params, 0, sizeof(adnn_data_parameters));
+  node_src_params.data_format = ADNN_DF_FP32;
+  node_src_params.batch_format = ADNN_BF_NCHW;
+  // strides set to 0 means it's a packed tensor
+
+  node_src_params.dims[0] = batch_sz;
+  node_src_params.dims[1] = input_channels;
+  node_src_params.dims[2] = input_h;
+  node_src_params.dims[3] = input_w;
+
+  // src
+  if (inference && node_src)
+    {
+      if (!*node_src)
+	{
+	  *node_src = ADNNDataCreate(aLib, &node_src_params);
+	}
+      neuron_param.inputs[0].data = *node_src;
+    }
+
+  if (training && node_bot_df)
+    {
+      if (node_src && *node_src && !*node_bot_df)
+	{
+	  *node_bot_df = ADNNDataClone(*node_src, true);
+	}
+      neuron_param.inputs[0].data_diff = *node_bot_df;
+    }
+
+  // output
+  neuron_param.n_output_nodes = (neuron_param.n_output_nodes == 0)? 1 : neuron_param.n_output_nodes;
+  neuron_param.outputs[0].name = node_name;
+
+  // TODO: CHECK LAYOUT. CURRENTLY assumes NCHW
+  if (inference && node_src && *node_src && node_sink)
+    {
+      if (!*node_sink)
+	{
+	  *node_sink = ADNNDataClone(*node_src, true);
+	}
+      neuron_param.outputs[0].data = *node_sink;
+    }
+  if (training && node_sink && *node_sink && node_top_df)
+    {
+      if (!*node_top_df)
+	{
+	  *node_top_df = ADNNDataClone(*node_sink, true);
+	}
+      neuron_param.outputs[0].data_diff = *node_top_df;
+    }
+
+  // parameters are all fully copied
+  // they can go out off scope
+  if (pnode_params)
+    {
+      *pnode_params = neuron_param;
+    }
+
+  if (node)
+    {
+      *node = ADNNodeCreate(aLib, &neuron_param);
+    }
+  
+  return (status);
+}
+
+
+
+static int PrepareFullyConnectNode(alib_obj aLib,
+	const adnn_control_params *layer_control,
+	int batch_sz,
+	int input_channels,
+	int input_h,
+	int input_w,
+	int n_categories,
+	const char * node_name,
+	const char *input_name,
+	ADNN_EDGE_DIR_TYPE input_edge_type,
+	adata_obj *node_src,
+	adata_obj *node_sink,
+	adata_obj *node_weights,
+	adata_obj *node_bias,
+	anode_obj *node,
+	adata_obj *node_bot_df = NULL,
+	adata_obj *node_top_df = NULL,
+	adata_obj *node_weights_df = NULL,
+	adata_obj *node_bias_df = NULL,
+	bool training = false,
+	bool inference = true,
+	adnn_node_parameters *pnode_params = NULL )
+{
+  int status = 0;
+
+  // convolution layer definition
+
+  adnn_node_parameters node_params;
+  if (pnode_params)
+    {
+      node_params = *pnode_params;
+    }
+  else
+    {
+      memset(&node_params, 0, sizeof(adnn_node_parameters));
+    }
+
+  node_params.type = ADNN_NODE_FULLY_CONNECT;
+	
+  if (node_name)
+    {
+      node_params.name = node_name;
+    }
+
+  if (layer_control)
+    {
+      node_params.control = *layer_control;
+    }
+
+  // input
+  node_params.n_input_nodes = (node_params.n_input_nodes == 0) ? 1 : node_params.n_input_nodes;
+
+  if (input_name)
+    {
+      node_params.inputs[0].name = input_name;
+    }
+
+  node_params.inputs[0].edge_type = input_edge_type;
+
+  // src
+  adnn_data_parameters node_src_params;
+  memset(&node_src_params, 0, sizeof(adnn_data_parameters));
+  node_src_params.data_format = ADNN_DF_FP32;
+  node_src_params.batch_format = ADNN_BF_NCHW;
+  // strides set to 0 means it's a packed tensor
+
+  node_src_params.dims[0] = batch_sz;
+  node_src_params.dims[1] = input_channels;
+  node_src_params.dims[2] = input_h;
+  node_src_params.dims[3] = input_w;
+  
+  if (inference && node_src)
+    {
+      if (!*node_src)
+	{
+	  *node_src = ADNNDataCreate(aLib, &node_src_params);
+	}
+      node_params.inputs[0].data = *node_src;
+
+      ADNNDataInspect(*node_src, &node_src_params);
+
+      batch_sz = (batch_sz == 0) ? (int)node_src_params.dims[0] : batch_sz;
+
+      // weights
+      adnn_data_parameters node_weights_params;
+      memset(&node_weights_params, 0, sizeof(adnn_data_parameters));
+      node_weights_params.batch_format = ADNN_BF_HW;
+      node_weights_params.dims[0] = n_categories;
+      node_weights_params.dims[1] = node_src_params.dims[1] * node_src_params.dims[2] * node_src_params.dims[3];
+
+      if (node_weights && !*node_weights)
+	{
+	  if (!*node_weights)
+	    {
+	      *node_weights = ADNNDataCreate(aLib, &node_weights_params);
+	    }
+	  node_params.inputs[0].weights = *node_weights;
+	}
+
+      // bias
+      adnn_data_parameters node_bias_params;
+      memset(&node_bias_params, 0, sizeof(adnn_data_parameters));
+      node_bias_params.batch_format = ADNN_BF_W;
+      node_bias_params.dims[0] = n_categories;
+
+      if (node_bias)
+	{
+	  if (!*node_bias)
+	    {
+	      *node_bias = ADNNDataCreate(aLib, &node_bias_params);
+	    }
+	  node_params.inputs[0].bias = *node_bias;
+	}
+    }
+
+  if (training)
+    {
+      if (node_bot_df)
+	{
+	  if (node_src && *node_src && !*node_bot_df)
+	    {
+	      *node_bot_df = ADNNDataClone(*node_src, true);
+	    }
+	  node_params.inputs[0].data_diff = *node_bot_df;
+	}
+      if (node_weights_df)
+	{
+	  if (node_weights && *node_weights && !*node_weights_df)
+	    {
+	      *node_weights_df = ADNNDataClone(*node_weights, true);
+	    }
+	  node_params.inputs[0].weights_diff = *node_weights_df;
+	}
+      if (node_bias_df)
+	{
+	  if (node_bias && *node_bias && !*node_bias_df)
+	    {
+	      *node_bias_df = ADNNDataClone(*node_bias, true);
+	    }
+	  node_params.inputs[0].bias_diff = *node_bias_df;
+	}
+    }
+
+  node_params.n_output_nodes = (node_params.n_output_nodes == 0) ? 1 : node_params.n_output_nodes;
+
+  if (node_name)
+    {
+      node_params.outputs[0].name = node_name;
+    }
+
+  // output
+  // TODO: CHECK LAYOUT. CURRENTLY assumes NCHW
+  adnn_data_parameters node_sink_params;
+
+  memset(&node_sink_params, 0, sizeof(adnn_data_parameters));
+  node_sink_params.data_format = ADNN_DF_FP32;
+  node_sink_params.batch_format = ADNN_BF_NW;
+  node_sink_params.dims[0] = batch_sz;
+  node_sink_params.dims[1] = n_categories;
+
+  if (inference && node_sink)
+    {
+      if (!*node_sink)
+	{
+	  *node_sink = ADNNDataCreate(aLib, &node_sink_params);
+	}
+      node_params.outputs[0].data = *node_sink;
+    }
+  if (training && node_top_df)
+    {
+      if (node_sink && *node_sink && !*node_top_df)
+	{
+	  *node_top_df = ADNNDataClone(*node_sink, true);
+	}
+      node_params.outputs[0].data_diff = *node_top_df;
+    }
+
+  // parameters are all fully copied
+  // they can go out off scope
+  if (pnode_params)
+    {
+      *pnode_params = node_params;
+    }
+
+  if (node)
+    {
+	*node = ADNNodeCreate(aLib, &node_params);
+    }
+  return(status);
+}
+
+
+static int
+PrepareSoftMaxNode(alib_obj aLib,
+		   ADNN_NODE_TYPE type,
+		   const adnn_control_params *layer_control,
+		   int batch_sz,
+		   int n_categories,
+		   const char * node_name,
+		   const char *input_name,
+		   ADNN_EDGE_DIR_TYPE input1_edge_type,
+		   adata_obj *node_src,
+		   const char *input2_name,
+		   adata_obj *node_src2,
+		   adata_obj *node_sink,
+		   anode_obj *node,
+		   adata_obj *node_bot_df = NULL,
+		   adata_obj *node_top_df = NULL,
+		   bool training = false,
+		   bool inference = true,
+		   adnn_node_parameters *pnode_params = NULL )
+{
+  int status = 0;
+
+  // convolution layer definition
+
+  adnn_node_parameters  node_params;
+  if (pnode_params)
+    {
+      node_params = *pnode_params;
+    }
+  else
+    {
+      memset(&node_params, 0, sizeof(adnn_node_parameters));
+    }
+  node_params.type = type;
+
+  if (node_name)
+    {
+      node_params.name = node_name;
+    }
+  
+  if (layer_control)
+    {
+      node_params.control = *layer_control;
+    }
+
+  // input
+  node_params.n_input_nodes = (node_params.n_input_nodes == 0) ? 1 : node_params.n_input_nodes;
+  if (input_name)
+    {
+      node_params.inputs[0].name = input_name;
+    }
+  
+  node_params.inputs[0].edge_type = input1_edge_type;
+  
+  if (inference)
+    {
+      // src
+      if (node_src && !*node_src)
+	{
+	  adnn_data_parameters node_src_params;
+	  memset(&node_src_params, 0, sizeof(adnn_data_parameters));
+	  node_src_params.data_format = ADNN_DF_FP32;
+	  node_src_params.batch_format = ADNN_BF_NW;
+	  // strides set to 0 means it's a packed tensor
+
+	  node_src_params.dims[0] = batch_sz;
+	  node_src_params.dims[1] = n_categories;
+
+	  *node_src = ADNNDataCreate(aLib, &node_src_params);
+	}
+      node_params.inputs[0].data = *node_src;
+
+      if (training)     // <<<<---- TT: shouldn't if(training 'align' with if(inference) ??
+	{
+	  if (node_bot_df)
+	    {
+	      if (node_src && *node_src && !*node_bot_df)
+		{
+		  *node_bot_df = ADNNDataClone(*node_src, true);
+		}
+	      node_params.inputs[0].data_diff = *node_bot_df;
+	    }
+	}
+    }
+
+  if (type == ADNN_NODE_SOFTMAX_COST_CROSSENTROPY)
+    {
+      node_params.n_input_nodes = 2;
+      // labels
+      if (input2_name)
+	{
+	  node_params.inputs[1].name = input2_name;
+	}
+      
+      if (inference && node_src2)
+	{
+	  if (!*node_src2)
+	    {
+	      // vector
+	      adnn_data_parameters node_lbl_params;
+	      memset(&node_lbl_params, 0, sizeof(adnn_data_parameters));
+	      node_lbl_params.data_format = ADNN_DF_FP32;
+	      node_lbl_params.batch_format = ADNN_BF_W;
+	      // strides set to 0 means it's a packed tensor
+	      node_lbl_params.dims[0] = n_categories;
+	      //?? [1]
+
+	      *node_src2 = ADNNDataCreate(aLib, &node_lbl_params);
+	    }
+	  node_params.inputs[1].data = *node_src2;
+	}
+    }
+
+  // output
+  // TODO: CHECK LAYOUT. CURRENTLY assumes NCHW
+  if (inference && node_sink)
+    {
+      if (!*node_sink)
+	{
+	  adnn_data_parameters node_sink_params;
+
+	  ADNNDataInspect(*node_src, &node_sink_params);
+
+	  // packed
+	  for (int i = 0; i < 4; ++i)
+	    {
+	      node_sink_params.strides[i] = 0;
+	    }
+
+	  *node_sink = ADNNDataCreate(aLib, &node_sink_params);
+	}
+      node_params.n_output_nodes = (node_params.n_output_nodes == 0) ? 1 : node_params.n_output_nodes;
+
+      if (node_name)
+	{
+	  node_params.outputs[0].name = node_name;
+	}
+      node_params.outputs[0].data = *node_sink;
+    }
+
+  if (training && node_top_df && !*node_top_df)
+    {
+      if (node_sink && *node_sink && !*node_top_df)
+	{
+	  *node_top_df = ADNNDataClone(*node_sink, true);
+	}
+      node_params.outputs[0].data_diff = *node_top_df;
+    }
+
+  // parameters are all fully copied
+  // they can go out off scope
+  if (pnode_params)
+    {
+      *pnode_params = node_params;
+    }
+
+  if (node)
+    {
+      *node = ADNNodeCreate(aLib, &node_params);
+    }
+  return(status);
+}
+
+static int
+ADNNSinglePoolingLayer(alib_obj aLib,
+		       const adnn_control_params *layer_control,
+		       const adnn_filter1D_parameters *filter_params,
+		       ADNN_POOLING_METHOD method,
+		       int batch_sz,
+		       int input_channels,
+		       int input_h,
+		       int input_w,
+		       bool training = false )
+{
+  int status = 0;
+
+  printf("***************************************************************************************************\n\n");
+  printf("ADNN : build and run a %s propagation pipeline with a single stand-alone pooling layer\n", ((training) ? "forward/backward" : "forward"));
+  printf("****************************************************************************************************\n");
+
+  adata_obj node_src = 0, node_sink = 0;
+  adata_obj node_bot_df = 0, node_top_df = 0;
+  anode_obj node = 0;
+  adnn_node_parameters node_params;
+
+  memset(&node_params, 0, sizeof(adnn_node_parameters));
+
+  PreparePoolingNode(aLib,
+		     ADNN_NODE_POOLING,
+		     method,
+		     filter_params,
+		     layer_control,
+		     batch_sz,
+		     input_channels,
+		     input_h,
+		     input_w,
+		     "pooling1",
+		     "pooling1_src",
+		     ADNN_ED_SOURCE,
+		     &node_src,
+		     &node_sink,
+		     (training) ? 0 : &node,
+		     0,		//bot_df
+		     0,		//top_df
+		     false,  // training
+		     true,   // inference
+		     (training) ? &node_params : 0 );
+
+  if (training)
+    {
+      PreparePoolingNode(aLib,
+			ADNN_NODE_POOLING,
+			method,
+			filter_params,
+			layer_control,
+			batch_sz,
+			input_channels,
+			input_h,
+			input_w,
+			"pooling1",
+			"pooling1_src",
+			ADNN_ED_SOURCE,
+			&node_src,
+			&node_sink,
+			&node,
+			&node_bot_df,
+			&node_top_df,
+			true,  // training
+			false,   // inference
+			&node_params);
+    }
+
+  // conctruct an execution plan
+  status = ADNNodeConstruct(node); // TT: !! status can be set multiple times before being returned - so we don't know (unless status is a class and operator= is used to set bits or keep a list of values that it is set to <<< like
+
+  if (training)
+    {
+      status = ADNNodeConstructTraining(node);
+    }
+  else
+    {
+      status = ADNNodeConstruct(node);
+    }
+
+  // allocate data before the node build
+  status = ADNNDataAllocate(node_src, 0);
+  status = ADNNDataAllocate(node_sink, 0);
+
+  if (training)
+    {
+      status = ADNNDataAllocate(node_bot_df, 0);
+      status = ADNNDataAllocate(node_top_df, 0);
+    }
+
+  // buld execution path
+  if (training)
+    {
+      status = ADNNodeBuildTraining(node);
+    }
+  else
+    {
+      status = ADNNodeBuild(node);
+    }
+  
+  // initialize top_df
+  if (training)
+    {
+      adnn_data_init_parameters init_top_df;
+      memset(&init_top_df, 0, sizeof(adnn_data_init_parameters));
+      init_top_df.init_distr = ADNN_WD_GAUSSIAN;
+      init_top_df.std = 0.01;
+      status = ADNNDataInit(node_top_df, &init_top_df);
+    }
+
+  // upload source
+  adnn_data_parameters data_params;
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(node_src, 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+  
+  // initialize with something
+  for (size_t i = 0; i < data_params.size; ++i)
+    {
+      ((float*)data_params.sys_mem)[i] = (float)((double)rand() * (1.0 / RAND_MAX));
+    }
+  status = ADNNDataCommit(node_src);
+
+  // run forward propagation
+  status = ADNNodeRunInference(node, NULL);
+
+  if (training)
+    {
+      // run backward propagation
+      status = ADNNodeRunTraining(node, NULL);
+    }
+
+  // download output
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(node_sink, 0, ADNN_MEM_ACCESS_READ, &data_params);
+
+  // move the data out here
+  // ....
+  status = ADNNDataCommit(node_sink);
+
+  // clean up
+  if (node_src)
+    {
+      status = ADNNDataDestroy(&node_src);
+      node_src = 0;
+    }
+
+  if (node_sink)
+    {
+      status = ADNNDataDestroy(&node_sink);
+      node_sink = 0;
+    }
+
+  if (training)
+    {
+      if (node_bot_df)
+	{
+	  status = ADNNDataDestroy(&node_bot_df);
+	  node_bot_df = 0;
+	}
+      if (node_top_df)
+	{
+	  status = ADNNDataDestroy(&node_top_df);
+	  node_top_df = 0;
+	}
+    }
+  status = ADNNodeDestroy(&node);
+  return(status);
+}
+
+
+
+static int
+ADNNSingleNeuronLayer(alib_obj aLib,
+		      const adnn_control_params *node_control,
+		      const adnn_neuron_parameters *neuron_params,
+		      int batch_sz,
+		      int input_channels,
+		      int input_h,
+		      int input_w,
+		      bool training = false)
+{
+  int status = 0;
+
+  adata_obj data_objs[2] = { 0, 0 };
+  adata_obj node_bot_df = 0, node_top_df = 0;
+  anode_obj neuron_node;
+  adnn_node_parameters node_params;
+
+  memset(&node_params, 0, sizeof(adnn_node_parameters));
+
+  printf("***************************************************************************************************\n\n");
+  printf("ADNN : build and run a %s propagation pipeline with a single stand-alone neuron layer\n", ((training) ? "forward/backward" : "forward"));
+  printf("****************************************************************************************************\n");
+
+  // neuron node definition
+  status = PrepareNeuronNode(aLib,
+			     node_control,
+			     neuron_params,
+			     batch_sz,
+			     input_channels,
+			     input_h,
+			     input_w,
+			     "neuron",
+			     "neuron_src",
+			     ADNN_ED_SOURCE,
+			     &data_objs[0],  // src
+			     &data_objs[1],  // sink
+			     (training)? 0 : &neuron_node,   // node
+			     0,   // bot diff
+			     0,   // top diff
+			     false,  // training
+			     true,   // inference
+			     (training) ? &node_params : 0 // neuron 1 params forward
+			     );
+
+  // TT: ?? Do we want to call PrepareNeuronNode a second time, with slightly different paramters if its in Training
+  // TT: ?? Or should we just do one (top) or the other (both) based on bool training
+  
+  if (training)
+    {
+      status = PrepareNeuronNode(aLib,
+				 node_control,
+				 neuron_params,
+				 batch_sz,
+				 input_channels,
+				 input_h,
+				 input_w,
+				 "neuron",
+				 "neuron_src",
+				 ADNN_ED_SOURCE,
+				 &data_objs[0],  // src
+				 &data_objs[1],  // sink
+				 &neuron_node,   // node
+				 &node_bot_df,   // bot diff
+				 &node_top_df,   // top diff
+				 true,  // training
+				 false,   // inference
+				 &node_params // neuron 1 params forward
+				 );
+    }
+
+  // plan execution
+  if (training)
+    {
+      status = ADNNodeConstructTraining(neuron_node);
+    }
+  else
+    {
+      status = ADNNodeConstruct(neuron_node);
+    }
+
+  // allocate data before the node build
+  status = ADNNDataAllocate(data_objs[0], 0);
+  status = ADNNDataAllocate(data_objs[1], 0);
+  
+  if (training)
+    {
+      status = ADNNDataAllocate(node_bot_df, 0);
+      status = ADNNDataAllocate(node_top_df, 0);
+    }
+
+  // buld execution path
+  if (training)
+    {
+      status = ADNNodeBuildTraining(neuron_node);
+    }
+  else
+    {
+      status = ADNNodeBuild(neuron_node);
+    }
+
+  // initialize top_df
+  if (training)
+    {
+      adnn_data_init_parameters init_top_df;
+      memset(&init_top_df, 0, sizeof(adnn_data_init_parameters));
+      init_top_df.init_distr = ADNN_WD_GAUSSIAN;
+      init_top_df.std = 0.01;
+      status = ADNNDataInit(node_top_df, &init_top_df);
+    }
+
+  // upload source
+  adnn_data_parameters data_params;
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_objs[0], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+
+  // initialize with something
+  for (size_t i = 0; i < data_params.size; ++i)
+    {
+      ((float*)data_params.sys_mem)[i] = (float)((double)rand() * (1.0 / RAND_MAX));
+    }
+
+  status = ADNNDataCommit(data_objs[0]);
+
+  // run forward propagation
+  status = ADNNodeRunInference(neuron_node, NULL);
+
+  if (training)
+    {
+      // run backward propagation
+      status = ADNNodeRunTraining(neuron_node, NULL);
+    }
+
+  // download output
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_objs[1], 0, ADNN_MEM_ACCESS_READ, &data_params);
+  
+  // move the data out here
+  // ....
+  status = ADNNDataCommit(data_objs[1]);
+
+  // clean up
+  for (int i = 0; i < 2; ++i)
+    {
+      if (data_objs[i])
+	{
+	  status = ADNNDataDestroy(&data_objs[i]);
+	}
+    }
+  
+  if (training)
+    {
+      if (node_bot_df)
+	{
+	  status = ADNNDataDestroy(&node_bot_df);
+	  node_bot_df = 0;
+	}
+      if (node_top_df)
+	{
+	  status = ADNNDataDestroy(&node_top_df);
+	  node_top_df = 0;
+	}
+    }
+  status = ADNNodeDestroy(&neuron_node);
+
+  return(status);
+}
+
+
+
+// TT: same issue here with Status >>Search all functions for overwriting status values <<
+
+static int
+ADNNSingleLRNLayer(alib_obj aLib,
+		   ADNN_NODE_TYPE type,
+		   const adnn_control_params *node_control,
+		   const adnn_lrn_parameters *LRN_params,
+		   int batch_sz,
+		   int input_channels,
+		   int input_h,
+		   int input_w,
+		   bool training = false)
+{
+  int status = 0;
+
+  printf("***************************************************************************************************\n\n");
+  printf("ADNN : build and run a %s propagation pipeline with a single stand-alone LRN layer\n",
+	 ((training) ? "forward/backward" : "forward"));
+  printf("****************************************************************************************************\n");
+
+  adata_obj data_objs[2] = { 0, 0 };
+  anode_obj LRN_node;
+  adata_obj node_bot_df = 0, node_top_df = 0;
+  adnn_node_parameters node_params;
+
+  memset(&node_params, 0, sizeof(adnn_node_parameters));
+
+  // LRN node definition
+  status = PrepareLRNode(aLib,
+			 type,
+			 node_control,
+			 LRN_params,
+			 batch_sz,
+			 input_channels,
+			 input_h,
+			 input_w,
+			 "LRN",
+			 "LRN_src",
+			 ADNN_ED_SOURCE,
+			 &data_objs[0],
+			 &data_objs[1],
+			 (training) ? 0 : &LRN_node,
+			 0,		//bot_df
+			 0,		//top_df
+			 false,  // training
+			 true,   // inference
+			 (training) ? &node_params : 0 );
+
+  if (training)
+    {
+      status = PrepareLRNode(aLib,
+			     type,
+			     node_control,
+			     LRN_params,
+			     batch_sz,
+			     input_channels,
+			     input_h,
+			     input_w,
+			     "LRN",
+			     "LRN_src",
+			     ADNN_ED_SOURCE,
+			     &data_objs[0],
+			     &data_objs[1],
+			     &LRN_node,
+			     &node_bot_df,
+			     &node_top_df,
+			     true,  // training
+			     false,   // inference
+			     &node_params);
+    }
+
+  // plan execution
+  if (training)
+    {
+      status = ADNNodeConstructTraining(LRN_node);
+    }
+  else
+    {
+      status = ADNNodeConstruct(LRN_node);
+    }
+
+  // allocate data before the node build
+  status = ADNNDataAllocate(data_objs[0], 0);
+  status = ADNNDataAllocate(data_objs[1], 0);
+  if (training)
+    {
+      status = ADNNDataAllocate(node_bot_df, 0);
+      status = ADNNDataAllocate(node_top_df, 0);
+    }
+
+  // buld execution path
+  if (training)
+    {
+      status = ADNNodeBuildTraining(LRN_node);
+    }
+  else
+    {
+      status = ADNNodeBuild(LRN_node);
+    }
+
+  // initialize top_df
+  if (training)
+    {
+      adnn_data_init_parameters init_top_df;
+      memset(&init_top_df, 0, sizeof(adnn_data_init_parameters));
+      init_top_df.init_distr = ADNN_WD_GAUSSIAN;
+      init_top_df.std = 0.01;
+      status = ADNNDataInit(node_top_df, &init_top_df);
+    }
+
+  // upload source
+  adnn_data_parameters data_params;
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_objs[0], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+  // initialize with something
+  for (size_t i = 0; i < data_params.size; ++i)
+    {
+      ((float*)data_params.sys_mem)[i] = (float)((double)rand() * (1.0 / RAND_MAX));
+    }
+
+  status = ADNNDataCommit(data_objs[0]);
+
+  // run forward propagation
+  status = ADNNodeRunInference(LRN_node, NULL);
+
+  if (training)
+    {
+      // run backward propagation
+      status = ADNNodeRunTraining(LRN_node, NULL);
+    }
+
+  // download output
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_objs[1], 0, ADNN_MEM_ACCESS_READ, &data_params);
+
+  // move the data out here
+  status = ADNNDataCommit(data_objs[1]);
+
+  // clean up
+  for (int i = 0; i < 2; ++i)
+    {
+      if (data_objs[i])
+	{
+	  status = ADNNDataDestroy(&data_objs[i]);
+	}
+    }
+
+  if (training)
+    {
+      if (node_bot_df)
+	{
+	  status = ADNNDataDestroy(&node_bot_df);
+	  node_bot_df = 0;
+	}
+      if (node_top_df)
+	{
+	  status = ADNNDataDestroy(&node_top_df);
+	  node_top_df = 0;
+	}
+    }
+  status = ADNNodeDestroy(&LRN_node);
+  return(status);
+}
+
+
+
+static int
+ADNNFullConnectLayer(alib_obj aLib,
+		     const adnn_control_params *layer_control,
+		     int batch_sz,
+		     int input_channels,
+		     int input_h,
+		     int input_w,
+		     int n_outputs,
+		     bool training = false)
+{
+  int status = 0;
+  printf("***************************************************************************************************\n\n");
+  printf("ADNN : build and run a %s pipeline with a single stand-alone fully connected layer\n",
+	 ((training) ? "forward/backward" : "forward"));
+  printf("****************************************************************************************************\n");
+
+  adata_obj node_src = 0, node_sink = 0, node_weights = 0, node_bias = 0;
+  adata_obj node_bot_df = 0, node_top_df = 0, node_weights_df = 0, node_bias_df = 0;
+  anode_obj node;
+  adnn_node_parameters node_params;
+
+  memset(&node_params, 0, sizeof(adnn_node_parameters));
+
+  PrepareFullyConnectNode(aLib,
+			  layer_control,
+			  batch_sz,
+			  input_channels,
+			  input_h,
+			  input_w,
+			  n_outputs,
+			  "fully_connect",
+			  "fully_connect_src",
+			  ADNN_ED_SOURCE,
+			  &node_src,
+			  &node_sink,
+			  &node_weights,
+			  &node_bias,
+			  (training)? 0 : &node,
+			  0,		// bot_df
+			  0,		// top_df
+			  0,		// weights_df
+			  0,		// bias_df
+			  false,	// training
+			  true,		// inference
+			  (training) ? &node_params : 0	);
+
+  if (training)
+    {
+      PrepareFullyConnectNode(aLib,
+			      layer_control,
+			      batch_sz,
+			      input_channels,
+			      input_h,
+			      input_w,
+			      n_outputs,
+			      "fully_connect",
+			      "fully_connect_src",
+			      ADNN_ED_SOURCE,
+			      &node_src,
+			      &node_sink,
+			      &node_weights,
+			      &node_bias,
+			      &node,
+			      &node_bot_df,
+			      &node_top_df,
+			      &node_weights_df,
+			      &node_bias_df,
+			      true,  // training
+			      false,   // inference
+			      &node_params);
+    }
+
+  // construct an execution plan
+  if (training)
+    {
+      status = ADNNodeConstructTraining(node);
+    }
+  else
+    {
+      status = ADNNodeConstruct(node);
+    }
+  
+  // allocate data before the node build
+  status = ADNNDataAllocate(node_src, 0);
+  status = ADNNDataAllocate(node_weights, 0);
+  status = ADNNDataAllocate(node_bias, 0);
+  status = ADNNDataAllocate(node_sink, 0);
+
+  // buld execution path
+  if (training)
+    {
+      status = ADNNDataAllocate(node_bot_df, 0);
+      status = ADNNDataAllocate(node_weights_df, 0);
+      status = ADNNDataAllocate(node_bias_df, 0);
+      status = ADNNDataAllocate(node_top_df, 0);
+      status = ADNNodeBuildTraining(node);
+    }
+  else
+    {
+      status = ADNNodeBuild(node);
+    }
+
+  // initialization operator
+  adnn_data_init_parameters init_weights;
+  adnn_data_init_parameters init_bias;
+  memset(&init_weights, 0, sizeof(adnn_data_init_parameters));
+  memset(&init_bias, 0, sizeof(adnn_data_init_parameters));
+
+  init_weights.init_distr = ADNN_WD_GAUSSIAN;
+  init_weights.std = 0.01;
+
+  init_bias.init_distr = ADNN_WD_CONSTANT;
+  init_bias.mean = 1;
+
+  // initilize (or upload) weights
+  status = ADNNDataInit(node_weights, &init_weights);
+  // initilize (or upload) bias
+  status = ADNNDataInit(node_bias, &init_bias);
+
+  // initialize top_df
+  if (training)
+    {
+      adnn_data_init_parameters init_top_df;
+      memset(&init_top_df, 0, sizeof(adnn_data_init_parameters));
+      init_top_df.init_distr = ADNN_WD_GAUSSIAN;
+      init_top_df.std = 0.01;
+      status = ADNNDataInit(node_top_df, &init_top_df);
+    }
+
+  // upload source
+  adnn_data_parameters data_params;
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(node_src, 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+
+  // initialize with something
+  for (size_t i = 0; i < data_params.size; ++i)
+    {
+      ((float*)data_params.sys_mem)[i] = (float)((double)rand() * (1.0 / RAND_MAX));
+    }
+
+  status = ADNNDataCommit(node_src);
+
+  // run forward propagation
+  status = ADNNodeRunInference(node, NULL);
+
+  // run backward propagation
+  if (training)
+    {
+      status = ADNNodeRunTraining(node, NULL);
+    }
+
+  // download output
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(node_sink, 0, ADNN_MEM_ACCESS_READ, &data_params);
+
+  // move the data out here
+  status = ADNNDataCommit(node_sink);
+
+  // clean up
+  status = ADNNDataDestroy(&node_src);
+  status = ADNNDataDestroy(&node_sink);
+  status = ADNNDataDestroy(&node_weights);
+  status = ADNNDataDestroy(&node_bias);
+
+  if (training)
+    {
+      status = ADNNDataDestroy(&node_bot_df);
+      status = ADNNDataDestroy(&node_weights_df);
+      status = ADNNDataDestroy(&node_bias_df);
+      status = ADNNDataDestroy(&node_top_df);
+    }
+
+  status = ADNNodeDestroy(&node);
+  
+  return(status);
+}
+
+static int
+ADNNSoftMaxLayer(alib_obj aLib,
+		 const adnn_control_params *layer_control,
+		 ADNN_NODE_TYPE type,
+		 int batch_sz,
+		 int n_categories,
+		 bool training = false )
+{
+  int status = 0;
+
+  printf("***************************************************************************************************\n\n");
+  printf("ADNN : build and run a %s propagation pipeline with a single stand-alone softmax layer\n",
+	 ((training) ? "forward/backward " : "forward "));
+  printf("****************************************************************************************************\n");
+
+  adata_obj node_src = 0, node_labels = 0, node_sink = 0, node_bot_df = 0;
+  anode_obj node;
+  adnn_node_parameters node_params;
+  memset(&node_params, 0, sizeof(adnn_node_parameters));
+
+  // softmax with cross entropy cost
+  // there is no sink data
+  // the output is bottom difference
+  // both inference and training are true
+  PrepareSoftMaxNode(aLib,
+		     type,
+		     layer_control,
+		     batch_sz,
+		     n_categories,
+		     "soft_max",
+		     "soft_max",
+		     ADNN_ED_SOURCE,
+		     &node_src,
+		     "input2_name",
+		     &node_labels,
+		     (training) ? 0 : &node_sink,
+		     &node,
+		     (training)?  &node_bot_df : 0,
+		     0,
+		     training,  // training
+		     true,   // inference
+		     0);
+			
+  // construct an execution plan
+  if (training)
+    {
+      status = ADNNodeConstructTraining(node);
+    }
+  else
+    {
+      status = ADNNodeConstruct(node);
+    }
+
+  // allocate data before the node build
+  status = ADNNDataAllocate(node_src, 0);
+  if (node_labels)
+    {
+      status = ADNNDataAllocate(node_labels, 0);
+    }
+  if (training)
+    {
+      status = ADNNDataAllocate(node_bot_df, 0);
+    }
+  else
+    {
+      status = ADNNDataAllocate(node_sink, 0);
+    }
+  // buld execution path
+  if (training)
+    {
+      status = ADNNodeBuildTraining(node);
+    }
+  else
+    {
+      status = ADNNodeBuild(node);
+    }
+
+  // initialization operator
+  if (node_labels)
+    {
+      adnn_data_init_parameters init_labels;
+      memset(&init_labels, 0, sizeof(adnn_data_init_parameters));
+      
+      init_labels.init_distr = ADNN_WD_CATEGORIES;
+      // initilize (or upload) labels for testing
+      status = ADNNDataInit(node_labels, &init_labels);
+    }
+
+  // upload source
+  adnn_data_init_parameters init_src;
+  memset(&init_src, 0, sizeof(adnn_data_init_parameters));
+
+  init_src.init_distr = ADNN_WD_UNIFORM;
+  status = ADNNDataInit(node_src, &init_src);
+
+  // run forward propagation
+  status = ADNNodeRunInference(node, NULL);
+
+  if (!training)
+    {
+      // download output
+      adnn_data_parameters data_params;
+      memset(&data_params, 0, sizeof(adnn_data_parameters));
+      status = ADNNDataAccess(node_sink, 0, ADNN_MEM_ACCESS_READ, &data_params);
+
+      // move the data out here
+      status = ADNNDataCommit(node_sink);
+    }
+
+  // clean up
+  if (node_src)
+    {
+      status = ADNNDataDestroy(&node_src);
+    }
+  if (node_sink)
+    {
+      status = ADNNDataDestroy(&node_sink);
+    }
+  if (node_labels)
+    {
+      status = ADNNDataDestroy(&node_labels);
+    }
+  if (node_bot_df)
+    {
+      status = ADNNDataDestroy(&node_bot_df);
+    }
+  
+  status = ADNNodeDestroy(&node);
+  return(status);
+}
+
+static int
+ADNNOpenVXBindingConvLayer(alib_obj aLib,
+			   int batch_sz,
+			   int input_channels,
+			   int input_h,
+			   int input_w,
+			   int n_output_featuremaps)
+{
+  int status = 0;
+  adnn_filter1D_parameters f_params;
+  f_params.pad = 2;
+  f_params.size = 5;
+  f_params.stride = 1;
+
+  printf("*********************************************************************************************************************************\n\n");
+  printf("ADNN : build an execution plan and export it together with the kernel source from a single convolutional layer (OpenVX binding)\n");
+  printf("**********************************************************************************************************************************\n");
+
+  adata_obj node_src = 0, node_sink = 0, node_weights = 0, node_bias = 0;
+  anode_obj node;
+ 
+  // convolution layer definition
+  status = PrepareConvNode(aLib,
+			   NULL,
+			   &f_params,
+			   batch_sz,
+			   input_channels,
+			   input_h,
+			   input_w,
+			   n_output_featuremaps,
+			   "conv_node",
+			   "conv_src",
+			   ADNN_ED_SOURCE,
+			   &node_src,
+			   &node_sink,
+			   &node_weights,
+			   &node_bias,
+			   &node );
+  
+  // construct an execution plan
+  status = ADNNodeConstruct(node);
+
+  // after the plan construction kernel parmeter could be inspected
+  size_t n_exe_stages = 0;
+  status = ADNNodeInspect(node, ADNNODE_INSPECT_EXECUTION_PLAN_FWD, &n_exe_stages, NULL);
+
+  adnn_node_exe_parameters * conv1_exe_params = NULL;
+  
+  if (n_exe_stages > 0)
+    {
+      conv1_exe_params = (adnn_node_exe_parameters *)malloc(n_exe_stages * sizeof(adnn_node_exe_parameters));
+      memset(conv1_exe_params, 0, n_exe_stages * sizeof(adnn_node_exe_parameters));
+      status = ADNNodeInspect(node, ADNNODE_INSPECT_EXECUTION_PLAN_FWD, &n_exe_stages, conv1_exe_params);
+
+      // use the data here ....
+      if (conv1_exe_params)
+	{
+	  free(conv1_exe_params);
+	}
+    }
+
+  // clean up
+  status = ADNNDataDestroy(&node_src);
+  status = ADNNDataDestroy(&node_sink);
+  status = ADNNDataDestroy(&node_weights);
+  status = ADNNDataDestroy(&node_bias);
+  status = ADNNodeDestroy(&node);
+
+  return(status);
+}
+
+
+// copied to single_conv_layer.cpp 
+static int
+ADNNSingleConvLayer(alib_obj aLib,
+		    const adnn_control_params *layer_control,
+		    const adnn_filter1D_parameters *filter_params,
+		    int batch_sz,
+		    int input_channels,
+		    int input_h,
+		    int input_w,
+		    int n_output_featuremaps,
+		    bool training = false,
+		    adnn_update_params *pupdate_params = NULL)
+{
+  int status = 0;
+
+  printf("***************************************************************************************************\n\n");
+  printf("ADNN : build and run a %s propagation pipeline with a single stand-alone convolutional layer\n",
+	((training) ? "forward/backward" : "forward"));
+  printf("****************************************************************************************************\n");
+
+  adata_obj node_src = 0, node_sink = 0, node_weights = 0, node_bias = 0;
+  adata_obj node_bot_df = 0, node_top_df = 0, node_weights_df = 0, node_bias_df = 0;
+  anode_obj node;
+  adnn_node_parameters node_params;
+
+  memset(&node_params, 0, sizeof(adnn_node_parameters));
+
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   filter_params,
+			   batch_sz,
+			   input_channels,
+			   input_h,
+			   input_w,
+			   n_output_featuremaps,
+			   "conv_node",
+			   "conv_src",
+			   ADNN_ED_SOURCE,
+			   &node_src,
+			   &node_sink,
+			   &node_weights,
+			   &node_bias,
+			   (training) ? 0 : &node,  // conv1
+			   0,			    // bot_df
+			   0,			    // top_df
+			   0,			    // weights_df
+			   0,			    // bias_df
+			   false,		    // training
+			   true,		    // inference
+			   (training) ? &node_params : 0 );
+
+  if (training)
+    {
+      if (pupdate_params)
+	{
+	  node_params.update_params = *pupdate_params;
+	}
+      status = PrepareConvNode(aLib,
+			       layer_control,
+			       filter_params,
+			       batch_sz,
+			       input_channels,
+			       input_h,
+			       input_w,
+			       n_output_featuremaps,
+			       "conv_node",
+			       "conv_src",
+			       ADNN_ED_SOURCE,
+			       &node_src,
+			       &node_sink,
+			       &node_weights,
+			       &node_bias,
+			       &node,
+			       &node_bot_df,
+			       &node_top_df,
+			       &node_weights_df,
+			       &node_bias_df,
+			       true,     // training
+			       false,    // inference
+			       &node_params);
+
+    }
+
+  // conctruct an execution plan
+  if (training)
+    {
+      status = ADNNodeConstructTraining(node);
+    }
+  else
+    {
+      status = ADNNodeConstruct(node);
+    }
+
+  // allocate data before the node build
+  status = ADNNDataAllocate(node_src, 0);
+  status = ADNNDataAllocate(node_weights, 0);
+  status = ADNNDataAllocate(node_bias, 0);
+  status = ADNNDataAllocate(node_sink, 0);
+
+  // buld execution path
+  if (training)
+    {
+      status = ADNNDataAllocate(node_bot_df, 0);
+      status = ADNNDataAllocate(node_weights_df, 0);
+      status = ADNNDataAllocate(node_bias_df, 0);
+      status = ADNNDataAllocate(node_top_df, 0);
+
+      status = ADNNodeBuildTraining(node);
+    }
+  else
+    {
+      status = ADNNodeBuild(node);
+    }
+
+  // initialization operator
+  adnn_data_init_parameters init_weights;
+  adnn_data_init_parameters init_bias;
+  memset(&init_weights, 0, sizeof(init_weights));
+  memset(&init_bias, 0, sizeof(init_bias));
+
+  init_weights.init_distr = ADNN_WD_GAUSSIAN;
+  init_weights.std = 0.01;
+
+  init_bias.init_distr = ADNN_WD_CONSTANT;
+  init_bias.mean = 0.01;
+
+  // initilize (or upload) weights
+  status = ADNNDataInit(node_weights, &init_weights);
+  // initilize (or upload) bias
+  status = ADNNDataInit(node_bias, &init_bias);
+
+  // initialize top_df
+  if (training)
+    {
+      adnn_data_init_parameters init_top_df;
+      memset(&init_top_df, 0, sizeof(adnn_data_init_parameters));
+      init_top_df.init_distr = ADNN_WD_GAUSSIAN;
+      init_top_df.std = 0.01;
+      status = ADNNDataInit(node_top_df, &init_top_df);
+    }
+
+  // upload source
+  adnn_data_parameters data_params;
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(node_src, 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+
+  // initialize with something
+  for (size_t i = 0; i < data_params.size; ++i)
+    {
+      ((float*)data_params.sys_mem)[i] = (float)((double)rand() * (1.0 / RAND_MAX));
+    }
+
+  status = ADNNDataCommit(node_src);
+
+  // run forward propagation
+  status = ADNNodeRunInference(node, NULL);
+  // run backward propagation
+  if (training)
+    {
+      status = ADNNodeRunTraining(node, NULL);
+    }
+
+  // download output
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(node_sink, 0, ADNN_MEM_ACCESS_READ, &data_params);
+
+  // move the data out here
+  status = ADNNDataCommit(node_sink);
+
+  // clean up
+  status = ADNNDataDestroy(&node_src);
+  status = ADNNDataDestroy(&node_sink);
+  status = ADNNDataDestroy(&node_weights);
+  status = ADNNDataDestroy(&node_bias);
+  
+  if (training)
+    {
+      status = ADNNDataDestroy(&node_bot_df);
+      status = ADNNDataDestroy(&node_weights_df);
+      status = ADNNDataDestroy(&node_bias_df);
+      status = ADNNDataDestroy(&node_top_df);
+    }
+  
+  status = ADNNodeDestroy(&node);
+
+  return(status);
+}
+
+
+
+// triple buffering
+static int
+ADNNSingleConvLayer3plBuffering(alib_obj aLib,
+				const adnn_control_params *layer_control,
+				const adnn_filter1D_parameters * filter_params,
+				int max_iterations,
+				int batch_sz,
+				int input_channels,
+				int input_h,
+				int input_w,
+				int n_output_featuremaps)
+{
+  int status = 0;
+  adata_obj data_objs[6] = { 0, 0, 0, 0, 0, 0 };
+  adata_obj data_src_objs[3] = { 0, 0, 0 };
+  anode_obj conv1_layer;
+
+  adnn_data_init_parameters init_weights;
+  dnn_data_init_parameters init_bias;
+  memset(&init_weights, 0, sizeof(init_weights));
+  memset(&init_bias, 0, sizeof(init_bias));
+
+  init_weights.init_distr = ADNN_WD_GAUSSIAN;
+  init_weights.std = 0.01;
+
+  init_bias.init_distr = ADNN_WD_CONSTANT;
+  init_bias.mean = 1;
+
+  printf("*******************************************************************************************************************\n\n");
+  printf("ADNN : build and run a forward propagation with a single stand-alone convolutional layer with triple input buffering\n");
+  printf("********************************************************************************************************************\n\n");
+
+  // convolution layer definition
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   filter_params,
+			   batch_sz,
+			   input_channels,
+			   input_h,
+			   input_w,
+			   n_output_featuremaps,
+			   "conv_node",
+			   "conv_src",
+			   ADNN_ED_SOURCE,
+			   &data_objs[0], // src
+			   &data_objs[3], // sink
+			   &data_objs[4], // weights
+			   &data_objs[5], // bias
+			   &conv1_layer);
+
+  // src triple buffer
+  adnn_data_parameters conv_data;
+
+  ADNNDataInspect(data_objs[0], &conv_data);
+
+  for (int i = 1; i < 3; ++i)
+    {
+      data_objs[i] = ADNNDataCreate(aLib, &conv_data);
+    }
+
+  // plan execution
+  status = ADNNodeConstruct(conv1_layer);
+
+  // allocate data before the node build
+  for (int i = 0; i < 6; ++i)
+    {
+      ADNNDataAllocate(data_objs[i], 0);
+    }
+
+  // buld execution path
+  status = ADNNodeBuild(conv1_layer);
+
+  // initilize (or upload) weights
+  status = ADNNDataInit(data_objs[4], &init_weights);
+
+  // upload 3 sources
+  for (int i = 0; i < 3; ++i)
+    {
+      data_src_objs[i] = data_objs[i];
+
+      adnn_data_parameters data_params;
+      memset(&data_params, 0, sizeof(adnn_data_parameters));
+      status = ADNNDataAccess(data_src_objs[i], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+
+      // initialize with something
+      for (size_t j = 0; j < data_params.size; ++j)
+	{
+	  ((float*)data_params.sys_mem)[j] = (float)((double)rand() * (1.0 / RAND_MAX));
+	}
+
+      status = ADNNDataCommit(data_src_objs[i]);
+    }
+
+  // run forward propagation in loop with 3-ple buffering
+  // run-time parameters
+  adnn_node_parameters  conv_param;
+  memset(&conv_param, 0, sizeof(conv_param));
+  conv_param.n_input_nodes = 1;
+  conv_param.inputs[0].data = data_src_objs[0];
+  status = ADNNodeRunInference(conv1_layer, &conv_param);
+  conv_param.inputs[0].data = data_src_objs[1];
+  status = ADNNodeRunInference(conv1_layer, &conv_param);
+
+  for (int i = 2; i < max_iterations; ++i)
+    {
+      // set run-time parameters
+      conv_param.inputs[0].data = data_src_objs[i % 3];
+      status = ADNNodeRunInference(conv1_layer, &conv_param);
+
+      // can update after the run has been finished
+      // upload new source
+      adnn_data_parameters data_params;
+      memset(&data_params, 0, sizeof(adnn_data_parameters));
+      status = ADNNDataAccess(data_src_objs[(i - 2) % 3], 0,  ADNN_MEM_ACCESS_WRITE_DESTRUCT, &data_params);
+
+      // initialize with something
+      for (size_t j = 0; j < data_params.size; ++j)
+	{
+	  ((float*)data_params.sys_mem)[j] = (float)((double)rand() * (1.0 / RAND_MAX));
+	}
+      status = ADNNDataCommit(data_src_objs[(i - 2) % 3]);
+    }
+  // download output
+  adnn_data_parameters data_params;
+  memset(&data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_objs[3], 0, ADNN_MEM_ACCESS_READ, &data_params);
+
+  // move the data out here
+  status = ADNNDataCommit(data_objs[3]);
+
+  // clean up
+  for (int i = 0; i < 6; ++i)
+    {
+      if (data_objs[i])
+	{
+	  status = ADNNDataDestroy(&data_objs[i]);
+	}
+    }
+  status = ADNNodeDestroy(&conv1_layer);
+  return(status);
+}
+	
+
+// Copy to cuDNN_binding.cpp
+// Line:2243
+static int
+ADNNcuDNNBinding(alib_obj aLib,
+		 const adnn_control_params *layer_control,
+		 int n_conv_filter_params,      const adnn_filter1D_parameters *conv_filter_params,
+		 int *conv_featuremaps,
+		 int n_neuron_params,           const adnn_neuron_parameters *neuron_params,
+		 int n_pooling_filter_parames,	const adnn_filter1D_parameters *pooling_filter_params,
+		 ADNN_POOLING_METHOD *pooling_method,
+		 int n_lrn_parameters,   	const adnn_lrn_parameters *LRN_params,
+		 int max_iterations,
+		 int batch_sz,
+		 int input_channels,
+		 int input_h,
+		 int input_w,
+		 int n_categories,
+		 bool training = false)
+{
+  int status = 0;
+  int n_nodes = 13;
+
+  printf("*********************************************************************************************************************************\n\n");
+  printf("ADNN : building a %s propagation pipepline with %d stand-alone layers with double buffering (cuDNN binding)\n", ((training) ? "forward/backward" : "forward"), n_nodes);
+  printf("ADNN : please, wait...\n");
+  printf("**********************************************************************************************************************************\n\n");
+
+  int n_data_objs = 20;
+  
+  adata_obj *data_objs = (adata_obj *)malloc(sizeof(adata_obj) * n_data_objs);
+  anode_obj *nodes = (anode_obj *)malloc(sizeof(anode_obj) * n_nodes);
+  adnn_node_parameters *node_params = (adnn_node_parameters *)malloc(sizeof(adnn_node_parameters) * n_nodes);
+  adata_obj *data_diffs = (adata_obj *)malloc(sizeof(adata_obj) * n_nodes);
+  
+  memset(data_objs, 0, sizeof(adata_obj) * n_data_objs);
+  memset(data_diffs, 0, sizeof(adata_obj) * n_nodes);
+  memset(nodes, 0, sizeof(anode_obj) * n_nodes);
+  memset(node_params, 0, sizeof(adnn_node_parameters) * n_nodes);
+
+  adata_obj data_src_objs[4] = { 0, 0, 0, 0 };
+  adata_obj data_sink_objs[2] = { 0, 0 };
+
+  adata_obj node_bot_df = 0;
+  adata_obj node_top_df = 0;
+  adata_obj node_weights_df = 0;
+  adata_obj *node_bias_df = 0;
+
+  // conv 1
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   &conv_filter_params[0],
+			   batch_sz,
+			   input_channels,
+			   input_h,
+			   input_w,
+			   conv_featuremaps[0],
+			   "conv1",
+			   "conv1_src",
+			   ADNN_ED_SOURCE,
+			   &data_src_objs[0], // external src
+			   &data_objs[0],     // sink1
+			   &data_objs[1],     // weights1
+			   &data_objs[2],     // bias1
+			   0,		      // conv1
+			   0,		      // bot_df
+			   0,		      // top_df
+			   0,		      // weights_df
+			   0,		      // bias_df
+			   false,	      // training
+			   true,	      // inference
+			   &node_params[0]);  // conv1 params forward
+		
+  // source double buffering
+  data_src_objs[1] = ADNNDataClone(data_src_objs[0], true);
+
+  // neuron1
+  status = PrepareNeuronNode(aLib,
+			     layer_control,
+			     &neuron_params[0],
+			     // input is a prev output
+			     0,
+			     0,
+			     0,
+			     0,
+			     "neuron1",
+			     "conv1",
+			     ADNN_ED_SOURCE,
+			     &data_objs[0],  // src2 == sink1
+			     &data_objs[3],  // sink2
+			     0,		     // neuron 1
+			     0,		     // bot_df
+			     0,		     // top_df
+			     false,	     // training
+			     true,	     // inference
+			     &node_params[1]); // neuron 1 params forward
+
+  // pooling 1
+  status = PreparePoolingNode(aLib,
+			      ADNN_NODE_POOLING,
+			      pooling_method[0],
+			      &pooling_filter_params[0],
+			      layer_control,
+			      0,
+			      0,
+			      0,
+			      0,
+			      "pooling1",
+			      "neuron1",
+			      ADNN_ED_SOURCE,
+			      &data_objs[3],  // src == prev sink
+			      &data_objs[4],  // sink
+			      0,	      // pooling 1
+			      0,	      //bot_df
+			      0,	      //top_df
+			      false,	      // training
+			      true,	      // inference
+			      &node_params[2] // pooling 1 params forward
+			      );
+
+  // lrn 1
+  status = PrepareLRNode(aLib,
+			 ADNN_NODE_RESP_NORM,
+			 layer_control,
+			 &LRN_params[0],
+			 0,
+			 0,
+			 0,
+			 0,
+			 "lrn1",
+			 "pooling1",
+			 ADNN_ED_SOURCE,
+			 &data_objs[4],	      // src == prev sink
+			 &data_objs[5],	      // sink
+			 0,		      // lnr 1
+			 0,		      //bot_df
+			 0,		      //top_df
+			 false,		      // training
+			 true,		      // inference
+			 &node_params[3]      // lnr 1 params forward
+			 );
+
+  // conv 2
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   &conv_filter_params[1],
+			   0,
+			   0,
+			   0,
+			   0,
+			   conv_featuremaps[1],
+			   "conv2",
+			   "lrn1",
+			   ADNN_ED_SOURCE,
+			   &data_objs[5],     // src == prev sink
+			   &data_objs[6],     // sink
+			   &data_objs[7],     // weights1
+			   &data_objs[8],     // bias1
+			   0,		      // conv2
+			   0,		      //bot_df
+			   0,		      //top_df
+			   0,		      //weights_df
+			   0,		      //bias_df
+			   false,	      // training
+			   true,	      // inference
+			   &node_params[4]);  // conv2 params forward
+	
+  // neuron2S
+	status = PrepareNeuronNode(aLib,
+		layer_control,
+		&neuron_params[1],
+		// input is a prev output
+		0,
+		0,
+		0,
+		0,
+		"neuron2",
+		"conv2",
+		ADNN_ED_SOURCE,
+		&data_objs[6], // src == prev sink
+		&data_objs[9], // sink2
+		0,        // neuron 2
+		0,		//bot_df
+		0,		//top_df
+		false,  // training
+		true,   // inference
+		&node_params[5] // neuron 2 params forward
+		);
+
+	// poooling2
+	status = PreparePoolingNode(aLib,
+		ADNN_NODE_POOLING,
+		pooling_method[1],
+		&pooling_filter_params[1],
+		layer_control,
+		0,
+		0,
+		0,
+		0,
+		"pooling2",
+		"neuron2",
+		ADNN_ED_SOURCE,
+		&data_objs[9],  // src == prev sink
+		&data_objs[10], // sink
+		0,        // pooling 2
+		0,		//bot_df
+		0,		//top_df
+		false,  // training
+		true,   // inference
+		&node_params[6] // pooling 2 params forward
+		);
+
+	// lrn 2
+	status = PrepareLRNode(aLib,
+		ADNN_NODE_RESP_NORM,
+		layer_control,
+		&LRN_params[1],
+		0,
+		0,
+		0,
+		0,
+		"lrn2",
+		"pooling2",
+		ADNN_ED_SOURCE,
+		&data_objs[10], // src == prev sink
+		&data_objs[11], // sink
+		0,        // lnr 2
+		0,		//bot_df
+		0,		//top_df
+		false,  // training
+		true,   // inference
+		&node_params[7] // lnr 2 params forward
+		);
+
+	// conv 3
+	status = PrepareConvNode(aLib,
+		layer_control,
+		&conv_filter_params[2],
+		0,
+		0,
+		0,
+		0,
+		conv_featuremaps[2],
+		"conv3",
+		"lrn2",
+		ADNN_ED_SOURCE,
+		&data_objs[11],  // src == prev sink
+		&data_objs[12],  // sink
+		&data_objs[13], // weights3
+		&data_objs[14], // bias3
+		0,     // conv3
+		0,		//bot_df
+		0,		//top_df
+		0,		//weights_df
+		0,		//bias_df
+		false,  // training
+		true,   // inference
+		&node_params[8] // conv2 params forward
+		);
+
+	// neuron3
+	status = PrepareNeuronNode(aLib,
+		layer_control,
+		&neuron_params[2],
+		// input is a prev output
+		0,
+		0,
+		0,
+		0,
+		"neuron3",
+		"conv3",
+		ADNN_ED_SOURCE,
+		&data_objs[12], // src == prev sink
+		&data_objs[15], // sink
+		0,        // neuron 3
+		0,		//bot_df
+		0,		//top_df
+		false,  // training
+		true,   // inference
+		&node_params[9] // neuron 3 params forward
+		);
+
+
+	// lrn 3
+	status = PrepareLRNode(aLib,
+		ADNN_NODE_RESP_NORM,
+		layer_control,
+		&LRN_params[2],
+		0,
+		0,
+		0,
+		0,
+		"lrn3",
+		"neuron3",
+		ADNN_ED_SOURCE,
+		&data_objs[15], // src == prev sink
+		&data_objs[16], // sink
+		0,        // lnr 3
+		0,		//bot_df
+		0,		//top_df
+		false,  // training
+		true,   // inference
+		&node_params[10] // lnr 3 params forward
+		);
+
+	// fully connected
+	status = PrepareFullyConnectNode(aLib,
+		layer_control,
+		0,
+		0,
+		0,
+		0,
+		n_categories,
+		"fully_connect1",
+		"lrn3",
+		ADNN_ED_SOURCE,
+		&data_objs[16],  // src == prev sink
+		&data_objs[17],  // sink
+		&data_objs[18],  // weights
+		&data_objs[19],  // bias
+		0,     // fully connected1
+		0,		//bot_df
+		0,		//top_df
+		0,		//weights_df
+		0,		//bias_df
+		false,  // training
+		true,   // inference
+		&node_params[11] // fully connected params forward
+		);
+
+
+	// softmax with cross entropy cost
+	// there is no sink data
+	// the output is bottom difference
+	// both inference and training are true
+	status = PrepareSoftMaxNode(aLib,
+		ADNN_NODE_SOFTMAX_COST_CROSSENTROPY,
+		layer_control,
+		0,
+		n_categories,
+		"soft_max",
+		"fully_connect1",
+		ADNN_ED_SOURCE,
+		&data_objs[17],
+		"labels",
+		&data_src_objs[2],   // input labels
+		0,		// external sink  - no sink. we are sending deltas as bottom differences up stream
+		0,       // soft max
+		&data_diffs[12],		//bot_df
+		0,		//top_df
+		true,  // training
+		true,   // inference
+		&node_params[12] //  softmax params forward
+		);
+
+
+	// labels double buffering
+
+	data_src_objs[3] = ADNNDataClone(data_src_objs[2], true);
+
+
+// at this point we connect all nodes of the stend-alone set by data running down-stream
+// now we start connecting data differences up-stream
+
+	// fully connected
+	status = PrepareFullyConnectNode(aLib,
+		layer_control,
+		0,
+		0,
+		0,
+		0,
+		n_categories,
+		"fully_connect1",
+		"lrn3",
+		ADNN_ED_SOURCE,
+// data has been already created with down-stream
+// we send src as a layout reference
+        &data_objs[16],  // src == prev sink
+		&data_objs[17],  // sink
+		&data_objs[18],  // weights
+		&data_objs[19],  // bias
+		0,     // fully connected1
+// new bottom data diff 
+		&data_diffs[11],		//bot_df
+// reference from down stream node
+		&data_diffs[12],		//top_df
+// weights and biad differences will eb created implicitly as slots
+		0,		//weights_df
+		0,		//bias_df
+		true,  // training
+		false,   // inference
+		&node_params[11] // fully connected params forward
+		);
+
+	// lrn 3
+	status = PrepareLRNode(aLib,
+		ADNN_NODE_RESP_NORM,
+		layer_control,
+		&LRN_params[2],
+		0,
+		0,
+		0,
+		0,
+		"lrn3",
+		"neuron3",
+		ADNN_ED_SOURCE,
+		&data_objs[15], // src == prev sink
+		&data_objs[16], // sink
+		0,        // lnr 3
+		// new bottom data diff 
+		&data_diffs[10],		//bot_df
+		// reference from down stream node
+		&data_diffs[11],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[10] // lnr 3 params forward
+		);
+
+
+	// neuron3
+	status = PrepareNeuronNode(aLib,
+		layer_control,
+		&neuron_params[2],
+		// input is a prev output
+		0,
+		0,
+		0,
+		0,
+		"neuron3",
+		"conv3",
+		ADNN_ED_SOURCE,
+		&data_objs[12], // src == prev sink
+		&data_objs[15], // sink
+		0,        // neuron 3
+		// new bottom data diff 
+		&data_diffs[9],		//bot_df
+		// reference from down stream node
+		&data_diffs[10],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[9] // neuron 3 params forward
+		);
+
+
+
+	// conv 3
+	status = PrepareConvNode(aLib,
+		layer_control,
+		&conv_filter_params[2],
+		0,
+		0,
+		0,
+		0,
+		conv_featuremaps[2],
+		"conv3",
+		"lrn2",
+		ADNN_ED_SOURCE,
+		&data_objs[11],  // src == prev sink
+		&data_objs[12],  // sink
+		&data_objs[13], // weights3
+		&data_objs[14], // bias3
+		0,     // conv3
+		// new bottom data diff 
+		&data_diffs[8],		//bot_df
+		// reference from down stream node
+		&data_diffs[9],		//top_df
+		// weights and bias differences will be created implicitly as slots
+		0,		//weights_df
+		0,		//bias_df
+		true,  // training
+		false,   // inference
+		&node_params[8] // fully connected params forward
+		);
+
+
+	// lrn 2
+	status = PrepareLRNode(aLib,
+		ADNN_NODE_RESP_NORM,
+		layer_control,
+		&LRN_params[1],
+		0,
+		0,
+		0,
+		0,
+		"lrn2",
+		"pooling2",
+		ADNN_ED_SOURCE,
+		&data_objs[10], // src == prev sink
+		&data_objs[11], // sink
+		0,        // lnr 2
+		// new bottom data diff 
+		&data_diffs[7],		//bot_df
+		// reference from down stream node
+		&data_diffs[8],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[7] // lnr 3 params forward
+		);
+
+
+	// poooling2
+	status = PreparePoolingNode(aLib,
+		ADNN_NODE_POOLING,
+		pooling_method[1],
+		&pooling_filter_params[1],
+		layer_control,
+		0,
+		0,
+		0,
+		0,
+		"pooling2",
+		"neuron2",
+		ADNN_ED_SOURCE,
+		&data_objs[9],  // src == prev sink
+		&data_objs[10], // sink
+		0,        // pooling 2
+		// new bottom data diff 
+		&data_diffs[6],		//bot_df
+		// reference from down stream node
+		&data_diffs[7],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[6] // lnr 3 params forward
+		);
+
+	// neuron2
+	status = PrepareNeuronNode(aLib,
+		layer_control,
+		&neuron_params[1],
+		// input is a prev output
+		0,
+		0,
+		0,
+		0,
+		"neuron2",
+		"conv2",
+		ADNN_ED_SOURCE,
+		&data_objs[6], // src == prev sink
+		&data_objs[9], // sink2
+		0,        // neuron 2
+		// new bottom data diff 
+		&data_diffs[5],		//bot_df
+		// reference from down stream node
+		&data_diffs[6],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[5] // lnr 3 params forward
+		);
+
+	// conv 2
+	status = PrepareConvNode(aLib,
+		layer_control,
+		&conv_filter_params[1],
+		0,
+		0,
+		0,
+		0,
+		conv_featuremaps[1],
+		"conv2",
+		"lrn1",
+		ADNN_ED_SOURCE,
+		&data_objs[5],  // src == prev sink
+		&data_objs[6],  // sink
+		&data_objs[7], // weights2
+		&data_objs[8], // bias2
+		0,     // conv2
+		// new bottom data diff 
+		&data_diffs[4],		//bot_df
+		// reference from down stream node
+		&data_diffs[5],		//top_df
+		// weights and bias differences will be created implicitly as node's internal slots
+		0,		//weights_df
+		0,		//bias_df
+		true,  // training
+		false,   // inference
+		&node_params[4] // conv2 params forward
+		);
+
+
+	// lrn 1
+	status = PrepareLRNode(aLib,
+		ADNN_NODE_RESP_NORM,
+		layer_control,
+		&LRN_params[0],
+		0,
+		0,
+		0,
+		0,
+		"lrn1",
+		"pooling1",
+		ADNN_ED_SOURCE,
+		&data_objs[4], // src == prev sink
+		&data_objs[5], // sink
+		0,        // lnr 1
+		// new bottom data diff 
+		&data_diffs[3],		//bot_df
+		// reference from down stream node
+		&data_diffs[4],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[3] // lnr 1 params forward
+		);
+
+	// pooling 1
+	status = PreparePoolingNode(aLib,
+		ADNN_NODE_POOLING,
+		pooling_method[0],
+		&pooling_filter_params[0],
+		layer_control,
+		0,
+		0,
+		0,
+		0,
+		"pooling1",
+		"neuron1",
+		ADNN_ED_SOURCE,
+		&data_objs[3],  // src == prev sink
+		&data_objs[4],  // sink
+		0,        // pooling 1
+		// new bottom data diff 
+		&data_diffs[2],		//bot_df
+		// reference from down stream node
+		&data_diffs[3],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[2] // pooling 1 params forward
+		);
+
+
+	// neuron1
+	status = PrepareNeuronNode(aLib,
+		layer_control,
+		&neuron_params[0],
+		// input is a prev output
+		0,
+		0,
+		0,
+		0,
+		"neuron1",
+		"conv1",
+		ADNN_ED_SOURCE,
+		&data_objs[0], // src2 == sink1
+		&data_objs[3],  // sink2
+		0,        // neuron 1
+		// new bottom data diff 
+		&data_diffs[1],		//bot_df
+		// reference from down stream node
+		&data_diffs[2],		//top_df
+		true,  // training
+		false,   // inference
+		&node_params[1] // neuron 1 params forward
+		);
+
+	// conv 1
+	status = PrepareConvNode(aLib,
+		layer_control,
+		&conv_filter_params[0],
+		batch_sz,
+		input_channels,
+		input_h,
+		input_w,
+		conv_featuremaps[0],
+		"conv1",
+		"conv1_src",
+		ADNN_ED_SOURCE,
+// references
+		&data_src_objs[0], // external src
+		&data_objs[0], // sink1
+		&data_objs[1], // weights1
+		&data_objs[2], // bias1
+		0,      // conv1
+		// new bottom data diff 
+		&data_diffs[0],		//bot_df
+		// reference from down stream node
+		&data_diffs[1],		//top_df
+		// weights and bias differences will be created implicitly as node's internal slots
+		0,		//weights_df
+		0,		//bias_df
+		true,  // training
+		false,   // inference
+		&node_params[0] // conv1 params forward
+		);
+
+
+	// plan execution
+	for (int i = 0; i < n_nodes; ++i)
+	{
+		nodes[i] = ADNNodeCreate(aLib, &node_params[i]);
+		assert(nodes[i]);
+	}
+
+	// plan execution
+	for (int i = 0; i < n_nodes; ++i)
+	{
+		if (training)
+		{
+			status |= ADNNodeConstructTraining(nodes[i]);
+		}
+		else
+		{
+			status |= ADNNodeConstruct(nodes[i]);
+		}
+	}
+
+	// allocate data before building exectution path
+	for (int i = 0; i < n_data_objs; ++i)
+	{
+		status |= ADNNDataAllocate(data_objs[i], 0);
+	}
+
+	for (int i = 0; i < 4; ++i)
+	{
+		status |= ADNNDataAllocate(data_src_objs[i], 0);
+	}
+
+	if (training)
+	{
+		for (int i = 0; i < n_nodes; ++i)
+		{
+			status |= ADNNDataAllocate(data_diffs[i], 0);
+		}
+	}
+	else
+	{
+		for (int i = 0; i < 2; ++i)
+		{
+			status |= ADNNDataAllocate(data_sink_objs[i], 0);
+		}
+	}
+
+	// buld execution path
+	for (int i = 0; i < n_nodes; ++i)
+	{
+		if (training)
+		{
+			status |= ADNNodeBuildTraining(nodes[i]);
+		}
+		else
+		{
+			status |= ADNNodeBuild(nodes[i]);
+		}
+	}
+
+	printf("*********************************************************************************************************************************\n\n");
+	printf("ADNN : running %d iterations of a %s propagation pipepline with %d stand-alone layers with double buffering (cuDNN binding)\n", max_iterations, ((training) ? "forward/backward" : "forward"), n_nodes);
+	printf("ADNN : please, wait...\n");
+	printf("**********************************************************************************************************************************\n\n");
+
+	adnn_data_init_parameters init_weights;
+	adnn_data_init_parameters init_bias;
+	memset(&init_weights, 0, sizeof(init_weights));
+	memset(&init_bias, 0, sizeof(init_bias));
+
+	init_weights.init_distr = ADNN_WD_GAUSSIAN;
+	init_weights.std = 0.01;
+
+	init_bias.init_distr = ADNN_WD_CONSTANT;
+	init_bias.mean = 0.01;
+// conv init
+	// TEM SKIP bias for conv for now
+	// initilize (or upload) weights
+	status |= ADNNDataInit(data_objs[1], &init_weights);
+	// initilize (or upload) weights
+	status |= ADNNDataInit(data_objs[6], &init_weights);
+	// initilize (or upload) weights
+	status |= ADNNDataInit(data_objs[11], &init_weights);
+
+// fully con init
+	// initilize (or upload) weights
+	status |= ADNNDataInit(data_objs[18], &init_weights);
+	// initilize (or upload) bias
+	status |= ADNNDataInit(data_objs[19], &init_bias);
+
+// initialize labels once (TEMP)
+	adnn_data_init_parameters init_labels;
+	memset(&init_labels, 0, sizeof(adnn_data_init_parameters));
+
+	init_labels.init_distr = ADNN_WD_CATEGORIES;
+	// initilize (or upload) labels for testing
+	status = ADNNDataInit(data_src_objs[2], &init_labels);
+	status = ADNNDataInit(data_src_objs[3], &init_labels);
+
+
+	adnn_node_parameters  net_run_param[2];
+	memset(net_run_param, 0, sizeof(adnn_node_parameters) * 2);
+
+	adnn_node_parameters  *conv_src_param = &net_run_param[0];
+	conv_src_param->name = "conv1";
+	conv_src_param->n_input_nodes = 1;
+
+	adnn_node_parameters  *conv_sink_param = &net_run_param[1];
+	// second external input
+
+	conv_sink_param->name = "soft_max";
+	conv_sink_param->n_input_nodes = 2;
+	conv_sink_param->inputs[1].data = data_src_objs[2];
+	if (!training)
+	{
+		conv_sink_param->n_output_nodes = 1;
+		conv_sink_param->outputs[0].data = data_sink_objs[0];
+	}
+	// run forward propagation
+	// with dynamicall updated prameters
+	// initial source upload
+
+	adnn_data_parameters src_data_params;
+	memset(&src_data_params, 0, sizeof(adnn_data_parameters));
+	status = ADNNDataAccess(data_src_objs[0], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &src_data_params);
+	// initialize with something
+
+	for (size_t j = 0; j < src_data_params.size; ++j)
+	{
+		((float*)src_data_params.sys_mem)[j] = (float)((double)rand() * (1.0 / RAND_MAX));
+	}
+
+	status = ADNNDataCommit(data_src_objs[0]);
+
+	for (int i = 0; i < max_iterations; ++i)
+	{
+		// download result
+		if (!training && i > 0)
+		{
+			adnn_data_parameters out_data_params;
+			memset(&out_data_params, 0, sizeof(adnn_data_parameters));
+			status = ADNNDataAccess(data_sink_objs[(i - 1) % 2], 0, ADNN_MEM_ACCESS_READ, &out_data_params);
+
+			// move the data out here
+			// .... = ((float*)out_data_params.sys_mem)[i] 
+			status = ADNNDataCommit(data_sink_objs[(i - 1) % 2]);
+		}
+
+		// upload source
+		adnn_data_parameters src_data_params;
+		memset(&src_data_params, 0, sizeof(adnn_data_parameters));
+		status = ADNNDataAccess(data_src_objs[(i + 1) % 2], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &src_data_params);
+		// initialize with something
+
+		for (size_t j = 0; j < src_data_params.size; ++j)
+		{
+			((float*)src_data_params.sys_mem)[j] = (float)((double)rand() * (1.0 / RAND_MAX));
+		}
+		status = ADNNDataCommit(data_src_objs[(i + 1) % 2]);
+
+		// run forward propagation
+
+		// send new input
+		conv_src_param->inputs[0].data = data_src_objs[(i % 2)];
+		// send new labels
+		conv_sink_param->inputs[1].data = data_src_objs[2 + (i % 2)];
+		// store result
+		if (!training)
+		{
+			conv_sink_param->outputs[0].data = data_sink_objs[(i % 2)];
+		}
+		status |= ADNNodeRunInference(nodes[0], conv_src_param);
+
+		for (int j = 1; j < n_nodes-1; ++j)
+		{
+			status |= ADNNodeRunInference(nodes[j], NULL);
+		}
+
+		status |= ADNNodeRunInference(nodes[n_nodes-1], conv_sink_param);
+
+		if (training)
+		  {		  
+		    for (int j = n_nodes - 2; j >= 0; --j)
+		      {
+			status |= ADNNodeRunTraining(nodes[j], NULL);
+		      }
+
+		}
+
+		printf("*********************************************************************************************************************************\n\n");
+		printf("ADNN : run %d iteration\n", i+1);
+		printf("**********************************************************************************************************************************\n\n");
+	}
+
+	// clean up
+	for (int i = 0; i < n_data_objs; ++i)
+	{
+		if (data_objs[i])
+		{
+			ADNNDataDestroy(&data_objs[i]);
+		}
+	}
+
+	for (int i = 0; i < 4; ++i)
+	{
+		if (data_src_objs[i])
+		{
+			ADNNDataDestroy(&data_src_objs[i]);
+		}
+	}
+
+	for (int i = 0; i < 2; ++i)
+	{
+		if (data_sink_objs[i])
+		{
+			ADNNDataDestroy(&data_sink_objs[i]);
+		}
+	}
+
+
+	for (int i = 0; nodes && i < n_nodes; ++i)
+	{
+		if (data_diffs[i])
+		{
+			ADNNDataDestroy(&data_diffs[i]);
+		}
+
+		if (nodes[i])
+		{
+			ADNNodeDestroy(&nodes[i]);
+		}
+	}
+
+	if (node_params)
+	{
+		free(node_params);
+	}
+	if (data_objs)
+	{
+		free(data_objs);
+	}
+	if (nodes)
+	{
+		free(nodes);
+	}
+	return(status);
+}
+
+
+// called by main()
+// moved to caffee_binding.cpp 
+static int ADNNCAFFEEBinding(alib_obj aLib,
+			     const adnn_net_parameters *net_params,
+			     const adnn_control_params *layer_control,
+			     int n_conv_filter_params,
+			     const adnn_filter1D_parameters *conv_filter_params,
+			     int *conv_featuremaps,
+			     int n_neuron_params,
+			     const adnn_neuron_parameters *neuron_params,
+			     int n_pooling_filter_parames,
+			     const adnn_filter1D_parameters *pooling_filter_params,
+			     ADNN_POOLING_METHOD *pooling_method,
+			     int n_lrn_parameters,
+			     const adnn_lrn_parameters *LRN_params,
+			     int max_iterations,
+			     int batch_sz,
+			     int input_channels,
+			     int input_h,
+			     int input_w,
+			     int n_categories,
+			     bool training = false)
+{
+  int status = 0;
+  int n_nodes = 13;
+
+  printf("*********************************************************************************************************************************\n\n");
+  printf("ADNN : building a %s propagation pipepline  with %s net consisting of %d layers with double buffering (CAFFE binding)\n", ((training) ? "forward/backward" : "forward"), net_params->name, n_nodes);
+  printf("ADNN : please, wait...\n");
+  printf("**********************************************************************************************************************************\n\n");
+
+  int n_data_objs = 20;
+
+  adata_obj *data_objs = (adata_obj *)malloc(sizeof(adata_obj) * n_data_objs);
+  anode_obj *nodes = (anode_obj *)malloc(sizeof(anode_obj) * n_nodes);
+  memset(data_objs, 0, sizeof(adata_obj) * n_data_objs);
+  memset(nodes, 0, sizeof(anode_obj) * n_nodes);
+
+  adata_obj data_src_objs[4] = { 0, 0, 0, 0 };
+  adata_obj data_sink_objs[2] = { 0, 0 };
+
+  // conv 1
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   &conv_filter_params[0],
+			   batch_sz,
+			   input_channels,
+			   input_h,
+			   input_w,
+			   conv_featuremaps[0],
+			   "conv1",
+			   "conv1_src",
+			   ADNN_ED_SOURCE,
+			   &data_src_objs[0], // external src
+			   &data_objs[0], // sink1
+			   &data_objs[1], // weights1
+			   &data_objs[2], // bias1
+			   &nodes[0]);      // conv1
+
+  // source double buffering
+
+  data_src_objs[1] = ADNNDataClone(data_src_objs[0], true);
+
+  // neuron1
+
+  status = PrepareNeuronNode(aLib,
+			     layer_control,
+			     &neuron_params[0],
+			     // input is a prev output
+			     0,
+			     0,
+			     0,
+			     0,
+			     "neuron1",
+			     "conv1",
+			     ADNN_ED_INTERNAL,
+			     &data_objs[0], // src2 == sink1
+			     &data_objs[3],  // sink2
+			     &nodes[1]);        // neuron 1
+			     
+  // pooling 1
+  status = PreparePoolingNode(aLib,
+			      ADNN_NODE_POOLING,
+			      pooling_method[0],
+			      &pooling_filter_params[0],
+			      layer_control,
+			      0,
+			      0,
+			      0,
+			      0,
+			      "pooling1",
+			      "neuron1",
+			      ADNN_ED_INTERNAL,
+			      &data_objs[3],  // src == prev sink
+			      &data_objs[4],  // sink
+			      &nodes[2]);       // pooling1
+  // lrn 1
+  status = PrepareLRNode(aLib,
+			 ADNN_NODE_RESP_NORM,
+			 layer_control,
+			 &LRN_params[0],
+			 0,
+			 0,
+			 0,
+			 0,
+			 "lrn1",
+			 "pooling1",
+			 ADNN_ED_INTERNAL,
+			 &data_objs[4], // src == prev sink
+			 &data_objs[5], // sink
+			 &nodes[3]);      // lrn 1
+  // conv 2
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   &conv_filter_params[1],
+			   0,
+			   0,
+			   0,
+			   0,
+			   conv_featuremaps[1],
+			   "conv2",
+			   "lrn1",
+			   ADNN_ED_INTERNAL,
+			   &data_objs[5],  // src == prev sink
+			   &data_objs[6],  // sink
+			   &data_objs[7], // weights1
+			   &data_objs[8], // bias1
+			   &nodes[4]);      // conv2
+  // neuron2
+  status = PrepareNeuronNode(aLib,
+			     layer_control,
+			     &neuron_params[1],
+			     // input is a prev output
+			     0,
+			     0,
+			     0,
+			     0,
+			     "neuron2",
+			     "conv2",
+			     ADNN_ED_INTERNAL,
+			     &data_objs[6], // src == prev sink
+			     &data_objs[9], // sink2
+			     &nodes[5]);      // neuron 2
+  // poooling2
+  status = PreparePoolingNode(aLib,
+			      ADNN_NODE_POOLING,
+			      pooling_method[1],
+			      &pooling_filter_params[1],
+			      layer_control,
+			      0,
+			      0,
+			      0,
+			      0,
+			      "pooling2",
+			      "neuron2",
+			      ADNN_ED_INTERNAL,
+			      &data_objs[9],  // src == prev sink
+			      &data_objs[10], // sink
+			      &nodes[6]);       // poolin1
+  // lrn 2
+  status = PrepareLRNode(aLib,
+			 ADNN_NODE_RESP_NORM,
+			 layer_control,
+			 &LRN_params[1],
+			 0,
+			 0,
+			 0,
+			 0,
+			 "lrn2",
+			 "pooling2",
+			 ADNN_ED_INTERNAL,
+			 &data_objs[10], // src == prev sink
+			 &data_objs[11], // sink
+			 &nodes[7]);      // lrn 2
+  // conv 3
+  status = PrepareConvNode(aLib,
+			   layer_control,
+			   &conv_filter_params[2],
+			   0,
+			   0,
+			   0,
+			   0,
+			   conv_featuremaps[2],
+			   "conv3",
+			   "lrn2",
+			   ADNN_ED_INTERNAL,
+			   &data_objs[11],  // src == prev sink
+			   &data_objs[12],  // sink
+			   &data_objs[13], // weights1
+			   &data_objs[14], // bias1
+			   &nodes[8]);      // conv2
+  // neuron3
+  status = PrepareNeuronNode(aLib,
+			     layer_control,
+			     &neuron_params[2],
+			     // input is a prev output
+			     0,
+			     0,
+			     0,
+			     0,
+			     "neuron3",
+			     "conv3",
+			     ADNN_ED_INTERNAL,
+			     &data_objs[12], // src == prev sink
+			     &data_objs[15], // sink
+			     &nodes[9]);        // neuron 2
+  // lrn 3
+  status = PrepareLRNode(aLib,
+			 ADNN_NODE_RESP_NORM,
+			 layer_control,
+			 &LRN_params[2],
+			 0,
+			 0,
+			 0,
+			 0,
+			 "lrn3",
+			 "neuron3",
+			 ADNN_ED_INTERNAL,
+			 &data_objs[15], // src == prev sink
+			 &data_objs[16], // sink
+			 &nodes[10]);      // lrn 3
+  // fully connected
+  status = PrepareFullyConnectNode(aLib,
+				   layer_control,
+				   0,
+				   0,
+				   0,
+				   0,
+				   n_categories,
+				   "fully_connect1",
+				   "lrn3",
+				   ADNN_ED_INTERNAL,
+				   &data_objs[16],  // src == prev sink
+				   &data_objs[17],  // sink
+				   &data_objs[18],  // weights
+				   &data_objs[19],  // bias
+				   &nodes[11]);      // fully connected1
+
+  // softmax with cross entropy cost
+  status = PrepareSoftMaxNode(aLib,
+			      ADNN_NODE_SOFTMAX_COST_CROSSENTROPY,
+			      layer_control,
+			      0,
+			      n_categories,
+			      "soft_max",
+			      "fully_connect1",
+			      ADNN_ED_INTERNAL,
+			      &data_objs[17],
+			      "labels",
+			      &data_src_objs[2],   // input labels
+			      (training) ? NULL : &data_sink_objs[0],  // external sink
+			      &nodes[12]      // soft max
+			      );
+
+  // labels double buffering
+  
+  data_src_objs[3] = ADNNDataClone(data_src_objs[2], true);
+
+  // sink double buffering
+  if (!training)
+    {
+      data_sink_objs[1] = ADNNDataClone(data_sink_objs[0], true);
+    }
+
+  const adnn_net_parameters * cifar_net_params = net_params;
+
+  anet_obj cifar_net = ADNNCreate(aLib, cifar_net_params);
+
+  status = ADNNodesAdd(cifar_net, n_nodes, nodes);
+
+  // connect node and verify net
+  status = ADNNConnect(cifar_net);
+
+  // plan execution
+  if (training)
+    {
+      status = ADNNConstructTraining(cifar_net);
+    }
+  else
+    {
+      status = ADNNConstruct(cifar_net);
+    }
+
+  // allocate data before building exectution path
+
+  for (int i = 0; i < n_data_objs; ++i)
+    {
+      status |= ADNNDataAllocate(data_objs[i], 0);     // ?? do these return bit-othogonal return types 
+    }
+
+  for (int i = 0; i < 4; ++i)
+    {
+      status |= ADNNDataAllocate(data_src_objs[i], 0);
+    }
+
+  for (int i = 0; !training && i < 2; ++i)
+    {
+      status |= ADNNDataAllocate(data_sink_objs[i], 0);
+    }
+
+  // buld execution path
+  if (training)
+    {
+      status = ADNNBuildTraining(cifar_net);
+    }
+  else
+    {
+      status = ADNNBuild(cifar_net);
+    }
+
+  printf("*********************************************************************************************************************************\n\n");
+  printf("ADNN : running %d iterations of a %s propagation pipepline  with %s net consisting of %d layers with double buffering (CAFFE binding)\n", max_iterations, ((training) ? "forward/backward" : "forward"), net_params->name, n_nodes);
+  printf("ADNN : please, wait...\n");
+  printf("**********************************************************************************************************************************\n\n");
+
+  adnn_data_init_parameters init_weights;
+  adnn_data_init_parameters init_bias;
+  memset(&init_weights, 0, sizeof(adnn_data_init_parameters));
+  memset(&init_bias, 0, sizeof(adnn_data_init_parameters));
+
+  init_weights.init_distr = ADNN_WD_GAUSSIAN;
+  init_weights.std = 0.01;
+
+  init_bias.init_distr = ADNN_WD_CONSTANT;
+  init_bias.mean = 1;
+
+  // TEM SKIP bias
+  // initilize (or upload) weights
+  status |= ADNNDataInit(data_objs[1], &init_weights);
+  // initilize (or upload) weights
+  status |= ADNNDataInit(data_objs[6], &init_weights);
+  // initilize (or upload) weights
+  status |= ADNNDataInit(data_objs[11], &init_weights);
+
+  // fully con init
+  // initilize (or upload) weights
+  status |= ADNNDataInit(data_objs[18], &init_weights);
+  // initilize (or upload) bias
+  status |= ADNNDataInit(data_objs[19], &init_bias);
+
+  // initialize labels once (TEMP)
+  adnn_data_init_parameters init_labels;
+  memset(&init_labels, 0, sizeof(adnn_data_init_parameters));
+  init_labels.init_distr = ADNN_WD_CATEGORIES;
+
+  // initilize (or upload) labels for testing
+  status = ADNNDataInit(data_src_objs[2], &init_labels);
+  status = ADNNDataInit(data_src_objs[3], &init_labels);
+
+  // dynamic run-time parameters 
+  adnn_node_parameters  net_run_param[2];
+  memset(net_run_param, 0, sizeof(adnn_node_parameters) * 2);
+
+  // net source 
+  adnn_node_parameters  *conv_src_param = &net_run_param[0];
+  conv_src_param->name = "conv1";
+  conv_src_param->n_input_nodes = 1;
+  conv_src_param->inputs[0].data = data_src_objs[0];
+
+  // net sink
+  adnn_node_parameters  *conv_sink_param = &net_run_param[1];
+  conv_sink_param->name = "soft_max";
+  // net second external input
+  conv_sink_param->n_input_nodes = 2;
+  conv_sink_param->inputs[1].data = data_src_objs[2];
+  if (!training)
+    {
+      conv_sink_param->n_output_nodes = 1;
+      conv_sink_param->outputs[0].data = data_sink_objs[0];
+    }
+
+  adnn_data_parameters src_data_params;
+  memset(&src_data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_src_objs[0], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &src_data_params);
+
+  // initialize with something
+  for (size_t j = 0; j < src_data_params.size; ++j)
+    {
+      ((float*)src_data_params.sys_mem)[j] = (float)((double)rand() * (1.0 / RAND_MAX));
+    }
+
+  status = ADNNDataCommit(data_src_objs[0]);
+
+  memset(&src_data_params, 0, sizeof(adnn_data_parameters));
+  status = ADNNDataAccess(data_src_objs[1], 0, ADNN_MEM_ACCESS_WRITE_DESTRUCT, &src_data_params);
+  // initialize with something
+
+  for (size_t j = 0; j < src_data_params.size; ++j)
+    {
+      ((float*)src_data_params.sys_mem)[j] = (float)((double)rand() * (1.0 / RAND_MAX));   // reusing data_param 
+    }
+
+  status = ADNNDataCommit(data_src_objs[1]);
+
+  // run net forward propogation with double buffering input and output
+  for (int i = 0; i < max_iterations; ++i)
+    {
+      // download result
+      if (!training && i > 0)
+	{
+	  adnn_data_parameters out_data_params;
+	  memset(&out_data_params, 0, sizeof(adnn_data_parameters));
+	  status = ADNNDataAccess(data_sink_objs[(i - 1) % 2], 0, ADNN_MEM_ACCESS_READ, &out_data_params);
+
+	  // move the data out here
+	  // .... = ((float*)out_data_params.sys_mem)[i] 
+
+	  status = ADNNDataCommit(data_sink_objs[(i - 1) % 2]);
+	}
+
+      // run forward propagation
+      // send new input
+      conv_src_param->inputs[0].data = data_src_objs[(i % 2)];
+      // send new labels
+      conv_sink_param->inputs[1].data = data_src_objs[2 + (i % 2)];
+
+      if (!training)
+	{
+	  // store result
+	  conv_sink_param->outputs[0].data = data_sink_objs[(i % 2)];
+	}
+
+      if (training)
+	{
+	  status = ADNNRunTraining(cifar_net, 2, net_run_param);
+	}
+      else
+	{
+	  status = ADNNRunInference(cifar_net, 2, net_run_param);
+	}
+
+      printf("*********************************************************************************************************************************\n\n");
+      printf("ADNN : run %d iteration\n", i+1);
+      printf("**********************************************************************************************************************************\n\n");
+    }
+
+  // clean up
+  for (int i = 0; i < n_data_objs; ++i)
+    {
+      if (data_objs[i])
+	{
+	  ADNNDataDestroy(&data_objs[i]);
+	}
+    }
+
+  for (int i = 0; i < 4; ++i)
+    {
+      if (data_src_objs[i])
+	{
+	  ADNNDataDestroy(&data_src_objs[i]);
+	}
+    }
+
+  for (int i = 0; i < 2; ++i)
+    {
+      if (data_sink_objs[i])
+	{
+	  ADNNDataDestroy(&data_sink_objs[i]);
+	}
+    }
+
+  for (int i = 0; i < n_nodes; ++i)
+    {
+      if (nodes[i])
+	{
+	  ADNNodeDestroy(&nodes[i]);
+	}
+    }
+
+  free(data_objs);
+  free(nodes);
+  
+  status = ADNNDestroy(&cifar_net);
+  
+  return(status);
+}
+
+
+
+static void Usage(void)
+{
+	printf("Arguments:\n");
+	printf("%*s" "-h" "%*s" "help.\n", 4, " ", 9, " ");
+	printf("%*s" "-v" "%*s" "verify each layer.\n", 4, " ", 9, " ");
+	printf("%*s" "-ni" "%*s" "# of iterations, default=400, max = 430, if -lt==true, it's set to 1.\n", 4, " ", 8, " ");
+	printf("%*s" "-li" "%*s" "# of per layer iterations, default=1000, if -nt==true, it's set to 1.\n", 4, " ", 8, " ");
+	printf("%*s" "-bz" "%*s" "# of batches, default=100.\n", 4, " ", 8, " ");
+	printf("%*s" "-iw" "%*s" "input width, default=32.\n", 4, " ", 8, " ");
+	printf("%*s" "-ih" "%*s" "input height, default=32.\n", 4, " ", 8, " ");
+	printf("%*s" "-ic0" "%*s" "n input channels in 0 layer, default=3.\n", 4, " ", 8, " ");
+	printf("%*s" "-oc0" "%*s" "n outputchnnels in 0 layer, default=32.\n", 4, " ", 8, " ");
+	printf("%*s" "-fs" "%*s" "filter size, default=3.\n", 4, " ", 8, " ");
+	printf("%*s" "-sd" "%*s" "convolution stride, default=1.\n", 4, " ", 8, " ");
+	printf("%*s" "-l" "%*s" "per layer timing is true, default=false.\n", 4, " ", 8, " ");
+	printf("%*s" "-n" "%*s" "net timing is false, default=true, if set it has a priority over the per layer timing.\n", 4, " ", 8, " ");
+	printf("%*s" "-cnv" "%*s" "single convolution layer. default = full application.\n", 4, " ", 8, " ");
+	printf("%*s" "-fw" "%*s" "forward propagation only. default = forward an dbackward propagations.\n", 4, " ", 8, " ");
+	exit(0);
+}
+
+
+#define TEST_CORRECT 0
+int main(int argc, char* argv[])
+{
+  int n_categories = 100;
+  int max_iterations = 400;
+  int per_layer_iters = 1000;
+  int batch_sz = 100;
+  int input_channels = 3;
+  int input_w = 32;
+  int input_h = 32;
+  bool per_layer_timing = false;
+  bool net_timing = true;
+  bool verify = false;
+  int n_output_features = 32;
+  int filter_sz = 3;
+  int stride = 1;
+  bool conv_only = false;
+  bool do_training = true;
+
+  for (int i = 1; i < argc; i++)
+    {
+      std::string arg_prefix(argv[i]);
+      if (arg_prefix == "-ni" && i < argc - 1)
+	{
+	  max_iterations = std::stoi(std::string(argv[++i]));
+	  max_iterations = (max_iterations <= 0) ? 1 : (max_iterations > 430) ? 430 : max_iterations;
+	}
+      else if (arg_prefix == "-bz" && i < argc - 1)
+	{
+	  batch_sz = std::stoi(std::string(argv[++i]));
+	  batch_sz = (batch_sz <= 0) ? 1 : batch_sz;
+	}
+      else if (arg_prefix == "-li" && i < argc - 1)
+	{
+	  per_layer_iters = std::stoi(std::string(argv[++i]));
+	  per_layer_iters = (per_layer_iters <= 0) ? 1 : per_layer_iters;
+	}
+      else if (arg_prefix == "-ic0" && i < argc - 1)
+	{
+	  input_channels = std::stoi(std::string(argv[++i]));
+	  input_channels = (input_channels <= 0) ? 1 : input_channels;
+	}
+      else if (arg_prefix == "-oc0" && i < argc - 1)
+	{
+	  n_output_features = std::stoi(std::string(argv[++i]));
+	  n_output_features = (n_output_features <= 0) ? 1 : n_output_features;
+	}
+      else if (arg_prefix == "-iw" && i < argc - 1)
+	{
+	  input_w = std::stoi(std::string(argv[++i]));
+	  input_w = (input_w <= 0) ? 1 : input_w;
+	}
+      else if (arg_prefix == "-ih" && i < argc - 1)
+	{
+	  input_h = std::stoi(std::string(argv[++i]));
+	  input_h = (input_h <= 0) ? 1 : input_h;
+	}
+      else if (arg_prefix == "-fs" && i < argc - 1)
+	{
+	  filter_sz = std::stoi(std::string(argv[++i]));
+	  filter_sz = (filter_sz <= 0) ? 3 : filter_sz;
+	}
+      else if (arg_prefix == "-sd" && i < argc - 1)
+	{
+	  stride = std::stoi(std::string(argv[++i]));
+	  stride = (stride <= 0) ? 1 : stride;
+	}
+      else if (arg_prefix == "-v")
+	{
+	  verify = true;
+	}
+      else if (arg_prefix == "-cnv")
+	{          
+	  conv_only = true;
+	}
+      else if (arg_prefix == "-fw")
+	{
+	  do_training = false;
+	}
+      else if (arg_prefix == "-h" && i < argc - 1)
+	{
+	  Usage();
+	}
+      else if (arg_prefix == "-l")
+	{
+	  per_layer_timing = true;
+	}
+      else if (arg_prefix == "-n")
+	{
+	  net_timing = false;
+	}
+      else
+	{
+	  printf("Unrecognized parameter: \"%s\".\n", arg_prefix.c_str());
+	  Usage();
+	}
+      
+    }
+
+  int status;
+  max_iterations = (/*!net_timing || */verify) ? 1 : max_iterations;
+  // TEMP	
+  // max_iterations = 100;
+
+  per_layer_iters = (verify) ? 1 : per_layer_iters;
+
+  adnn_lib_parameters  lib_params;
+  memset(&lib_params, 0, sizeof(adnn_lib_parameters));
+
+  lib_params.accel_type = CL_DEVICE_TYPE_GPU;
+  lib_params.ocl_kernels_path = "../aLibDNN";     // <<<<< make a command line arg, or part of a config file
+  alib_obj aLib = ADNNLibCreate(&lib_params);
+
+  printf("Created ADNN library %s\n", ADNNLibGetName(aLib));
+
+  adnn_control_params layer_control;
+  memset(&layer_control, 0, sizeof(adnn_control_params));
+  layer_control.per_layer_iter = 1;
+  layer_control.per_layer_messages = (net_timing == false);
+  layer_control.per_layer_timing = per_layer_timing;
+  layer_control.per_layer_iter = per_layer_iters;
+  layer_control.debug_level = (verify) ? 1 : 0;
+  
+  adnn_filter1D_parameters f_params;
+  adnn_filter1D_parameters pooling_f_params;
+
+  adnn_neuron_parameters neuron1_params;
+  adnn_lrn_parameters lrn_params;
+
+  f_params.size = filter_sz;
+  f_params.pad = (filter_sz-1) / 2;
+  f_params.stride = stride;
+
+  neuron1_params.power = 0;
+  neuron1_params.alpha = 1;
+  neuron1_params.beta = 1;
+  neuron1_params.type = ADNN_NEURON_RELU; // ADNN_NEURON_SOFTRELU; // ADNN_NEURON_TANH; // ADNN_NEURON_LOGISTIC;
+
+  pooling_f_params.pad = 0;
+  pooling_f_params.size = 3;
+  pooling_f_params.stride = 2;
+
+  ADNN_POOLING_METHOD pooling_method = ADNN_POOLING_MAX; //ADNN_POOLING_AVE; 
+
+  lrn_params.region = ADNN_LRN_WITHIN_CHANNEL;; // ADNN_LRN_ACROSS_CHANNELS; // 
+  lrn_params.kernel_sz = 3;
+  lrn_params.alpha = 0.001;
+  lrn_params.beta = 0.75;
+  ADNN_NODE_TYPE softmax_type = (do_training) ? ADNN_NODE_SOFTMAX_COST_CROSSENTROPY : ADNN_NODE_SOFTMAX;
+
+  adnn_update_params update_params;
+  memset(&update_params, 0, sizeof(adnn_update_params));
+
+  update_params.weights_lr.policy = ADNN_LP_LINEAR;
+  update_params.weights_lr.base = 0.001;
+  update_params.bias_lr.policy = ADNN_LP_FIXED;
+  update_params.bias_lr.base = 0.001;
+  update_params.weights_momentum = 0.9;
+  update_params.bias_momentum = 0;
+  update_params.weights_decay = 0.004;
+
+#if 1
+  // filter setting
+  status = ADNNSingleConvLayer(aLib,
+			       &layer_control,
+			       &f_params,
+			       batch_sz,
+			       input_channels,
+			       input_h,
+			       input_w,
+			       n_output_features,
+			       do_training,
+			       &update_params);
+
+  if (conv_only)
+    {
+      exit(0);
+    }
+
+  status = ADNNSingleNeuronLayer(aLib,
+				 &layer_control,
+				 &neuron1_params,
+				 batch_sz,
+				 input_channels,
+				 input_h,
+				 input_w,
+				 do_training);
+
+  status = ADNNSinglePoolingLayer(aLib,
+				  &layer_control,
+				  &pooling_f_params,
+				  pooling_method,
+				  batch_sz,
+				  input_channels,
+				  input_h,
+				  input_w,
+				  do_training);
+
+  status = ADNNSingleLRNLayer(aLib,
+			      ADNN_NODE_RESP_NORM,
+			      &layer_control,
+			      &lrn_params,
+			      batch_sz,
+			      input_channels,
+			      input_h,
+			      input_w,
+			      do_training);
+  
+  status = ADNNFullConnectLayer(aLib,
+				&layer_control,
+				batch_sz,
+				input_channels,
+				input_h,
+				input_w,
+				n_categories,
+				do_training);
+
+  status = ADNNSoftMaxLayer(aLib,
+			    &layer_control,
+			    softmax_type,
+			    batch_sz,
+			    n_categories,
+			    do_training);
+
+
+  status = ADNNOpenVXBindingConvLayer(aLib,
+				      batch_sz,
+				      input_channels,
+				      input_h,
+				      input_w,
+				      n_output_features);
+#endif
+
+#if 1
+  // triple buffering
+  status = ADNNSingleConvLayer3plBuffering(aLib,
+					   &layer_control,
+					   &f_params,
+					   3, //max_iterations,
+					   batch_sz,
+					   input_channels,
+					   input_h,
+					   input_w,
+					   n_output_features);
+//	exit(0);
+#endif
+
+  int n_conv_filter_params = 3;
+  adnn_filter1D_parameters *conv_filter_params = (adnn_filter1D_parameters *)malloc(sizeof(adnn_filter1D_parameters) *n_conv_filter_params);
+  int *conv_featuremaps = (int*)malloc(sizeof(int) * n_conv_filter_params);
+  int n_neuron_params = 3;
+  adnn_neuron_parameters *neuron_params = (adnn_neuron_parameters *)malloc(sizeof(adnn_neuron_parameters) * n_neuron_params);
+  int n_pooling_filter_parames = 2;
+  adnn_filter1D_parameters *pooling_filter_params = (adnn_filter1D_parameters *)malloc(sizeof(adnn_filter1D_parameters) * n_pooling_filter_parames);
+  ADNN_POOLING_METHOD *pooling_methods = (ADNN_POOLING_METHOD *)malloc(sizeof(ADNN_POOLING_METHOD) * n_pooling_filter_parames);
+
+  for (int i = 0; i < n_conv_filter_params; ++i)
+    {
+      conv_filter_params[i] = f_params;
+    }
+  conv_featuremaps[0] = 32;
+  conv_featuremaps[1] = 32;
+  conv_featuremaps[2] = 64;
+
+  for (int i = 0; i < n_neuron_params; ++i)
+    {
+      neuron_params[i] = neuron1_params;
+    }
+  
+  neuron_params[1].type = ADNN_NEURON_TANH;
+  neuron_params[2].type = ADNN_NEURON_LOGISTIC;
+  
+  for (int i = 0; i < n_pooling_filter_parames; ++i)
+    {
+      pooling_filter_params[i] = pooling_f_params;
+    }
+  
+  pooling_methods[0] = ADNN_POOLING_MAX;
+  pooling_methods[1] = ADNN_POOLING_AVE;
+
+  int n_lrn_parameters = 3;
+  adnn_lrn_parameters *LRN_params = (adnn_lrn_parameters*)malloc(sizeof(adnn_lrn_parameters) * n_lrn_parameters);
+  for (int i = 0; i < n_lrn_parameters; ++i)
+    {
+      LRN_params[i] = lrn_params;
+    }
+
+#if 1
+  status = ADNNcuDNNBinding(aLib,
+			    &layer_control,
+			    n_conv_filter_params,
+			    conv_filter_params,
+			    conv_featuremaps,
+			    n_neuron_params,
+			    neuron_params,
+			    n_pooling_filter_parames,
+			    pooling_filter_params,
+			    pooling_methods,
+			    n_lrn_parameters,
+			    LRN_params,
+			    max_iterations,
+			    batch_sz,
+			    input_channels,
+			    input_h,
+			    input_w,
+			    n_categories,
+			    do_training	);
+//	exit(0);
+#endif
+
+  adnn_net_parameters net_params;
+  memset(&net_params, 0, sizeof(adnn_net_parameters));
+
+  adnn_control_params net_control;
+  memset(&net_control, 0, sizeof(adnn_control_params));
+
+  net_control.per_layer_timing = net_timing;
+  net_control.per_layer_messages = net_timing;
+
+  // net is a node
+  net_params.name = "CIFAR10";
+
+  net_params.control = net_control;
+
+  net_params.update_params = update_params;
+
+  ADNNCAFFEEBinding(aLib,
+		    &net_params,
+		    &layer_control,
+		    n_conv_filter_params,
+		    conv_filter_params,
+		    conv_featuremaps,
+		    n_neuron_params,
+		    neuron_params,
+		    n_pooling_filter_parames,
+		    pooling_filter_params,
+		    pooling_methods,
+		    n_lrn_parameters,
+		    LRN_params,
+		    max_iterations,
+		    batch_sz,
+		    input_channels,
+		    input_h,
+		    input_w,
+		    n_categories,
+		    do_training	);
+
+  free(conv_filter_params);
+  free(conv_featuremaps);
+  free(neuron_params);
+  free(pooling_filter_params);
+  free(pooling_methods);
+  free(LRN_params);
+  
+  ADNNLibDestroy(&aLib);
+}
+// END

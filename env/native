@@ -1,0 +1,36 @@
+# File:native
+# Path:/c/env
+# Host:thaddeus-nn
+# History --------------------------------------------------------------
+# From:TT:/c/AMD/Env.Repo  --> thaddeus-nn:/c/Env/Repo 
+# This contains paths for standard installation directories (AMDAPPSDK)
+# And for unchanged repositories (OpenCL-caffe; apcLibs)
+## From thaddeus-nn:/home/thaddeus/.bashrc...
+## 160303 These must be set by sourcing one of the files in /c/env
+## /c/env/hybrid : to low level builds (test/dvlp/debug) (WD(working directory) /c/AMD/hybrid) 
+## /c/env/mlopen : for cafe build using my forks from github  (WD: /c/AMD/MLopen/caffe|adnn)
+## /c/env/native : for the unchanged code build from pulling github repo (WD: /repo/stt) 
+##export LD_LIBRARY_PATH=/c/AMD/MLopen/appsdk/lib/x86_64:/opt/clBLAS-2.3:/usr/lib32:/usr/lib
+##export CLBLAS_ROOT=/opt/clBLAS-2.3/
+##export AMDAPPSDKROOT=/opt/AMDAPPSDK-3.0
+
+AMDAPPSDKROOT=/opt/AMDAPPSDK-3.0
+CLBLAS_ROOT=/opt/clBLAS-2.3/
+
+LIBGL_DRIVERS_PATH=/usr/lib/fglrx/dri:/usr/lib/x86_64-linux-gnu/dri:/usr/lib/dri:/usr/lib32/fglrx/dri:/usr/lib/i386-linux-gnu/dri
+
+LD_LIBRARY_PATH=/opt/AMDAPPSDK-3.0/lib/x86_64/:/repo/stt/OpenCL-caffe/build/lib:/opt/clBLAS-2.3:/usr/lib64:/usr/lib32:/usr/lib
+
+PATH=./:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CAFFE_ROOT=/repo/stt/OpenCL-caffe
+CAFFE_SRC=/repo/stt/OpenCL-caffe/src/caffe
+CAFFE_INC=/repo/stt/OpenCL-caffe/include
+
+export CAFFE_ROOT
+export LD_LIBRARY_PATH
+export LIBGL_DRIVERS_PATH
+export CLBLAS_ROOT
+export AMDAPPSDKROOT
+
+echo "Set environment for Native Caffe build and testing"

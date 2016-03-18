@@ -1,0 +1,241 @@
+//File: aLibDNNInternal.cpp
+//AMD/MPopen/aDNN/src(lib)/
+
+/**********************************************************************
+Copyright ?2015 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+?	Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+?	Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or
+ other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+********************************************************************/
+// to share code with between CPU and GPU
+
+#include "aDNNInternal.hpp"
+#include <string>
+// ALEX removed #include <malloc.h>
+
+namespace adnn
+{
+  double CalculateErr(aDType c_val, aDType g_val)
+  {
+    double err = 0;
+    if (sizeof(aDType) == 4)
+      {
+	int * c_uval = (int *)&c_val;
+	int * g_uval = (int *)&g_val;
+	err = (double)std::abs(*c_uval - *g_uval);
+      }
+    else if (sizeof(aDType) == 8)
+      {
+	int64_t * c_uval = (int64_t *)&c_val;
+	int64_t * g_uval = (int64_t *)&g_val;
+	err = (double)std::abs(*c_uval - *g_uval);
+      }
+
+//double delta = abs(c_val - g_val);
+//double nextafter_delta = nextafterf(min(abs(c_val), abs(g_val)), (aDType)INFINITY) - min(abs(c_val), abs(g_val));
+//err = delta / nextafter_delta;
+    return err;
+  }
+
+  /************************************************************************************************************************
+   **
+   **			ADNNLib Library
+   **
+   ************************************************************************************************************************/
+
+  ADNNLib::ADNNLib(cl_context context, cl_device_type accel_type, std::string accel_platform, std::string ocl_kernels_path)
+  {
+    parent_ = this;
+    internal_ = 0;
+    type_ = ADNN_NODE_GENERIC;
+    
+    name_ = "ADNN Library v0.01";
+    ocl_ = createaDNNOCL();
+    ((CaLibsOCL*)ocl_)->setupCL(context, accel_type, accel_platform, ocl_kernels_path);
+    
+#ifdef WITH_CLBLAS
+    int ret = clblasSetup();
+    if (ret != CL_SUCCESS) {
+      printf("clblasSetup() failed with %d\n", ret);
+      ((CaLibsOCL*)ocl_)->cleanup();
+      
+    }
+#endif
+  }
+
+  ADNNLib::~ADNNLib(void)
+  {
+    if (ocl_)
+      {
+	((CaLibsOCL*)ocl_)->cleanup();
+	delete ((CaLibsOCL*)ocl_);
+	ocl_ = NULL;
+      }
+  }
+
+  aDNNode* ADNNLib::ADNNCreate(const adnn_net_parameters & net_param)
+  {
+    assert(net_param.type == ADNN_NODE_NET);
+    ADNN* ret = new ADNN(*this, net_param);
+    assert(ret);
+    
+    printf("Created Net.Root: %s\n", ret->getName().c_str());
+    
+    return(ret);
+  }
+
+  int ADNNLib::ADNNDestroy(ADNN* net)
+  {
+    int ret = ADNN_SUCCESS;
+    assert(net);
+    net->release();
+    return(ret);
+  }
+
+  aDNNTensor * ADNNLib::createTensor(const adnn_data_parameters & data_params)
+  {
+    aDNNTensor * new_tens = NULL;
+
+    switch (data_params.data_format)
+      {
+      case ADNN_DF_FP32:
+      case ADNN_DF_FP16:
+	new_tens = new CDNN_Tensor<float>(*this, data_params);
+	break;
+
+      case ADNN_DF_FP64:
+	new_tens = new CDNN_Tensor<double>(*this, data_params);
+	break;
+	
+      case ADNN_DF_I32:
+	new_tens = new CDNN_Tensor<int>(*this, data_params);
+	break;
+      case ADNN_DF_UI32:
+	new_tens = new CDNN_Tensor<unsigned int>(*this, data_params);
+	break;
+      case ADNN_DF_UI16:
+	new_tens = new CDNN_Tensor<unsigned short>(*this, data_params);
+	break;
+      case ADNN_DF_I16:
+	new_tens = new CDNN_Tensor<short>(*this, data_params);
+	break;
+      case ADNN_DF_UI8:
+	new_tens = new CDNN_Tensor<unsigned char>(*this, data_params);
+	break;
+      case ADNN_DF_I8:
+	new_tens = new CDNN_Tensor<char>(*this, data_params);
+	break;
+			
+      default:
+	printf("ERROR: creating MD: unknown data type: %d\n", data_params.data_format);
+	break;
+
+      }
+    return(new_tens);
+  }
+
+  aDNNode * ADNNLib::createNode(const adnn_node_parameters & node_descr)
+  {
+    adnn::aDNNode * newNode = NULL;
+    ADNNBase * base = (ADNNBase *)getParent();
+    switch (node_descr.type)
+      {
+      case ADNN_NODE_CONV:
+	newNode = new aDNNodeConv(*base, node_descr);
+	break;
+      case ADNN_NODE_NEURON:
+	newNode = new aDNNodeNeuron(*base, node_descr);
+	break;
+      case ADNN_NODE_POOLING:
+	newNode = new aDNNodePooling(*base, node_descr);
+	break;
+      case ADNN_NODE_RESP_NORM:
+	newNode = new aDNNodeLRN(*base, node_descr);
+	break;
+      case ADNN_NODE_FULLY_CONNECT:
+	newNode = new aDNNodeFullyConnect(*base, node_descr);
+	break;
+      case ADNN_NODE_SOFTMAX:
+	newNode = new aDNNodeSoftMax(*base, node_descr);
+	break;
+      case ADNN_NODE_SOFTMAX_COST_CROSSENTROPY:
+	newNode = new aDNNodeSoftMax(*base, node_descr);
+	assert(newNode);
+	((aDNNodeSoftMax*)newNode)->setCrossEntrypyLoss(true);
+	break;
+      default:
+	printf("ERROR unknown node : %d\n", node_descr.type);
+	break;
+     }
+    if (newNode)
+      {
+	printf("Created Node: %s\n", newNode->getName().c_str());
+      }
+    else
+      {
+	printf("Unknown error in createdNode: %s\n", newNode->getName().c_str());
+      }
+    return(newNode);
+  }
+
+  int ADNNLib::removeNode(aDNNode *node)
+  {
+    int ret = 0;
+    assert(node);
+    node->release();
+    return(ret);
+  }
+
+  cl_context ADNNLib::getContext(void) const
+  {
+    // get run-time context
+    CaLibsOCL* ocl = (CaLibsOCL*)getOclBackEnd();
+    cl_context context = ocl->getClContext();
+    return(context);
+  }
+
+  cl_command_queue ADNNLib::getQueue(int device_indx, int indx) const
+  {
+    CaLibsOCL* ocl = (CaLibsOCL*)getOclBackEnd();
+    cl_command_queue pref_queue = ocl->getClQueue(device_indx, indx);
+    return(pref_queue);
+  }
+
+  cl_command_queue  ADNNLib::createQueue(cl_device_id deviceId, const cl_command_queue_properties *prop)
+  {
+    cl_command_queue ret = 0;
+    CaLibsOCL* ocl = (CaLibsOCL*)getOclBackEnd();
+    ret = ocl->createClQueue(deviceId, prop);
+    return(ret);
+  }
+
+  ADNNLib * ADNNLibCreate(cl_context context, cl_device_type accel_type, std::string accel_platform, std::string ocl_kernels_path)
+  {
+    adnn::ADNNLib * newLib = new adnn::ADNNLib(context, accel_type, accel_platform, ocl_kernels_path);
+    assert(newLib);
+    return(newLib);
+  }
+
+  int ADNNLibDestroy(adnn::ADNNLib * alib)
+  {
+    int ret = ADNN_SUCCESS;
+    assert(alib);
+    alib->release();
+    return(ret);
+  }
+} // adnn
+
+
+
+
+
+

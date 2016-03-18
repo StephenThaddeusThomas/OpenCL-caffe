@@ -1,0 +1,1256 @@
+/**********************************************************************
+Copyright ?2015 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+?	Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+?	Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or
+ other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+********************************************************************/
+// to share code with between CPU and GPU
+
+#include "aDNNInternal.hpp"
+
+namespace adnn
+{
+  //////////////////////////////////////////////////////
+  //
+  // DNN_OCL_kern_exe
+  //
+  //////////////////////////////////////////////////////
+  //	typedef std::pair<void*, size_t> ocl_arg;
+  //	typedef std::map<int, ocl_arg> ocl_args;
+  //	typedef std::vector<cl_event> ocl_wait_events;
+  
+  CDNN_OCL_kern_exe::CDNN_OCL_kern_exe() : ADNNBase()
+  {
+    kernel_ = 0;
+    queue_ = 0;
+    completion_event_ = 0;
+  }
+
+  CDNN_OCL_kern_exe::CDNN_OCL_kern_exe(ADNNBase * parent, std::string name,
+				       std::string file_nm, std::string build_options,
+				       cl_kernel ocl_kern,
+				       std::vector<size_t> * glb_sz,
+				       std::vector<size_t> * lcl_sz,
+				       cl_command_queue queue)
+  {
+    parent_ = parent;
+    kern_src_file_ = file_nm;
+    kernel_ = ocl_kern;
+    if (glb_sz)
+      {
+	glb_sz_ = *glb_sz;
+      }
+    if (lcl_sz)
+      {
+	lcl_sz_ = *lcl_sz;
+      }
+    queue_ = queue;
+    completion_event_ = 0;
+    kern_nm_ = name;
+    kern_build_options_ = build_options;
+  }
+
+
+  CDNN_OCL_kern_exe::CDNN_OCL_kern_exe(const CDNN_OCL_kern_exe & copy)
+  {
+    parent_ = copy.parent_;
+    kern_src_file_ = copy.kern_src_file_;
+    kern_nm_ = copy.kern_nm_;
+    kern_src_string_ = copy.kern_src_string_;
+    kern_build_options_ = copy.kern_build_options_;
+    kernel_ = copy.kernel_;
+    
+    if (kernel_)
+      {
+	clRetainKernel(kernel_);
+      }
+    
+    lcl_sz_ = copy.lcl_sz_;
+    glb_sz_ = copy.glb_sz_;
+    queue_ = copy.queue_;
+    completion_event_ = copy.completion_event_;
+    wait_events_ = copy.wait_events_;
+  }
+  
+  int CDNN_OCL_kern_exe::ExecuteNoWait(ocl_args * args,	cl_command_queue queue)
+  {
+    int ret = CL_SUCCESS;
+    cl_kernel ocl_kernel = getOclKern();
+
+    if (args)
+      {
+	ocl_args::iterator ai;
+	for (ai = (*args).begin(); ai != (*args).end(); ++ai)
+	  {
+	    int i = (*ai).first;
+	    ocl_arg arg = (*ai).second;
+	    ret |= clSetKernelArg(ocl_kernel, i, arg.first, arg.second);
+	  }
+	CHECK_OPENCL_ERROR(ret, "parmeters failed.");
+      }
+    cl_command_queue ocl_queue = (!queue) ? getOclQueue() : queue;
+
+    size_t g_wk[3] = { getGblSize()[0], getGblSize()[1], getGblSize()[2] };
+
+    size_t l_wk[3] = { getLclSize()[0], getLclSize()[1], getLclSize()[2] };
+
+    ret = clEnqueueNDRangeKernel(ocl_queue, ocl_kernel, 3, NULL, g_wk, l_wk, 0, NULL, NULL);
+
+    if (ret != CL_SUCCESS)
+      {
+	printf("ERROR: Kernel %s failed with error %d.\n", getKernNm().c_str(), ret);
+      }
+    CHECK_OPENCL_ERROR(ret, "EROOR: Kernel failed.");
+
+    return(ret);
+  }
+
+  int CDNN_OCL_kern_exe::Construct(const std::string & additional_options)
+  {
+    int ret = CL_SUCCESS;
+    aDNNode* node = (aDNNode*)getParent();
+    CaLibsOCL* ocl = (CaLibsOCL*)node->getBaseOcl();
+    assert(ocl);
+    ret = ocl->loadProgram(kern_src_string_, kern_src_file_, kern_build_options_ + additional_options);
+    return(ret);
+  }
+
+// addtional option must be the sam as in Construct !!???
+  int CDNN_OCL_kern_exe::Build(const ocl_args & args, int q_indx, const std::string & additional_options)
+  {
+    int ret = CL_SUCCESS;
+    aDNNode* node = (aDNNode*)getParent();
+    CaLibsOCL* ocl = (CaLibsOCL*)node->getBaseOcl();
+    assert(ocl);
+
+    kernel_ = ocl->getKernel(kern_src_file_, kern_nm_, kern_build_options_ + additional_options);
+
+    assert(kernel_);
+
+    queue_ = ocl->getClQueue(q_indx);
+
+    assert(queue_);
+
+// pass all available arguments once
+// WARNING : there is only pointers inside
+// it fails if the call is out of arguments scope'
+
+    ocl_args::const_iterator ai;
+    for (ai = args.begin(); ai != args.end(); ++ai)
+      {
+	int i = (*ai).first;
+	ocl_arg arg = (*ai).second;
+	ret |= clSetKernelArg(kernel_, i, arg.first, arg.second);
+      }
+
+    CHECK_OPENCL_ERROR(ret, "parmeters failed.");
+
+    return(ret);
+  }
+
+  void CDNN_OCL_kern_exe::retrieveExeParams(adnn_node_exe_parameters & params)
+  {
+    params.kern_src_file = kern_src_file_.c_str();
+    params.kern_nm = kern_nm_.c_str();
+    params.kern_src_string = kern_src_string_.c_str();
+    params.kern_build_options = kern_build_options_.c_str();
+    params.kernel = kernel_;
+    for (int i = 0; i < 3; ++i)
+      {
+	params.glb_sz[i] = 1;
+      }
+
+    for (int i = 0; i < glb_sz_.size(); ++i)
+      {
+	params.glb_sz[i] = glb_sz_[i];
+      }
+
+    for (int i = 0; i < 3; ++i)
+      {
+	params.lcl_sz[i] = 1;
+      }
+    
+    for (int i = 0; i < lcl_sz_.size(); ++i)
+      {
+	params.lcl_sz[i] = lcl_sz_[i];
+      }
+
+    params.queue = queue_;
+    params.completion_event = completion_event_;
+    params.wait_events = (wait_events_.empty()) ? NULL : &wait_events_[0];
+    
+  }
+
+  CDNN_OCL_kern_exe::~CDNN_OCL_kern_exe()
+  {
+    if (kernel_)
+      {
+	clReleaseKernel(kernel_);
+	kernel_ = 0;
+      }
+  }
+  
+  /************************************************************************************************************************
+   **
+   **			aDNNode Class
+   **
+   ************************************************************************************************************************/
+  
+  aDNNode::aDNNode(const ADNNBase & lib, const adnn_node_parameters & node_params) : ADNNBase()
+  {
+    setParent((void*)&lib);
+    init(node_params);
+  }
+
+  aDNNode::aDNNode() : ADNNBase()
+  {
+    my_net_ = NULL;
+    per_layer_timing_ = false;
+
+    //  per layer iterations for timing
+    per_layer_iter_ = 1;
+    per_layer_messages_ = false;
+    debug_level_ = 0;
+    monitor_ = NULL;
+    processing_time_ = 0;
+    iter_counter_ = 0;
+    null_inp_str_ = ADNN_INPUT_NM;
+    null_out_str_ = ADNN_OUTPUT_NM;
+  }
+
+  aDNNode::aDNNode(const aDNNode & rh)
+  {
+    *this = rh;
+  }
+
+  const aDNNode & aDNNode:: operator = (const aDNNode & rh)
+  {
+    *(ADNNBase*)this = *(ADNNBase*)&rh;
+
+    null_inp_str_ = ADNN_INPUT_NM;
+    null_out_str_ = ADNN_OUTPUT_NM;
+
+    setInternal(rh.getInternal());
+    my_net_ = rh.my_net_;
+    per_layer_timing_ = rh.per_layer_timing_;
+
+    //  per layer iterations for timing
+    per_layer_iter_ = rh.per_layer_iter_;
+    per_layer_messages_ = rh.per_layer_messages_;
+    debug_level_ = rh.debug_level_;
+    monitor_ = rh.monitor_;
+    processing_time_ = rh.processing_time_;
+    iter_counter_ = rh.iter_counter_;
+
+    type_ = rh.type_;
+    name_ = rh.name_;
+
+    for (int i = 0; i < rh.inputs_.size(); ++i)
+      {
+	inputs_.push_back(rh.inputs_[i]);
+      }
+
+    for (int i = 0; i < rh.outputs_.size(); ++i)
+      {
+	outputs_.push_back(rh.outputs_[i]);
+      }
+    return *this;
+  }
+
+  aDNNode::~aDNNode(void)
+  {
+    for (std::map<aDNNTensor *, std::string>::iterator i = owned_tensors_.begin(); i != owned_tensors_.end(); ++i)
+      {
+	(*i).first->release();
+      }
+  }
+
+  bool aDNNode::isPerLayerTiming(void) const
+  {
+    const ADNN * net = &getNet();
+    bool ret = per_layer_timing_ && ((net)? !net->isPerLayerTiming()  : true);
+    
+    return(ret);
+  }
+
+  int aDNNode::init(const adnn_node_parameters & c_descr)
+  {
+    setInternal(0);
+    iter_counter_       = 0;
+    my_net_             = NULL;
+    null_inp_str_       = ADNN_INPUT_NM;
+    null_out_str_       = ADNN_OUTPUT_NM;
+    per_layer_timing_   = c_descr.control.per_layer_timing;
+    //  per layer iterations for timing
+    per_layer_iter_     = c_descr.control.per_layer_iter;
+    per_layer_messages_ = c_descr.control.per_layer_messages;
+    debug_level_        = c_descr.control.debug_level;
+    monitor_            = c_descr.control.monitor;
+    
+    type_          = c_descr.type;
+    name_          = (c_descr.name) ? c_descr.name : "";
+    neuron_params_ = c_descr.neuron_params;
+    update_params_ = c_descr.update_params;
+
+    ADNNBase * lib = (ADNNBase *)getParent();
+    for (int i = 0; i < c_descr.n_input_nodes; ++i)
+      {
+	aDNNEdge t_i(*lib, c_descr.inputs[i]); // TT: what are we actually passing here 
+	inputs_.push_back(t_i);
+
+// make slots from passed diffs
+	if (c_descr.inputs[i].data_diff)
+	  {
+	    std::string slot_nm = getBotDiffNm(i);
+	    addSlot(slot_nm, *(aDNNTensor*)c_descr.inputs[i].data_diff, true);
+	  }
+	if (c_descr.inputs[i].weights_diff)
+	  {
+	    std::string slot_nm = getWeightsDiffNm(i);
+	    addSlot(slot_nm, *(aDNNTensor*)c_descr.inputs[i].weights_diff, true);
+	  }
+	if (c_descr.inputs[i].bias_diff)
+	  {
+	    std::string slot_nm = getBiasDiffNm(i);
+	    addSlot(slot_nm, *(aDNNTensor*)c_descr.inputs[i].bias_diff, true);
+	  }
+      }
+    for (int i = 0; i < c_descr.n_output_nodes; ++i)
+      {
+	aDNNEdge t_o(*lib, c_descr.outputs[i]);
+	outputs_.push_back(t_o);
+
+	// make slots from passed diffs
+	if (c_descr.outputs[i].data_diff)
+	  {
+	    std::string slot_nm = getTopDiffNm(i);
+	    addSlot(slot_nm, *(aDNNTensor*)c_descr.outputs[i].data_diff, true);
+	  }
+      }
+
+// FIXED LOCATION (OLD) generic_comp_otions_ = std::string(" -I ") + std::string(GETCWD(NULL, 0)) + std::string("/../aLibDNN/ ");
+//160311 
+    const std::string & kernel_path = ((ADNNLib * )lib)->getKernelPath();
+    generic_comp_otions_ = std::string(" -I ") + kernel_path + " ";
+
+    if (getDebugLevel() == 0)
+      {
+	generic_comp_otions_ += std::string(" -cl-std=CL2.0 ");
+//	generic_comp_otions_ += std::string(" -save-temps=") + std::string(_getcwd(NULL, 0)) + std::string("/. ");
+//	generic_comp_otions_ += std::string("  -Wb,-hsail-reg-slots=8 -Wb,-hsail-reg32-pressure-limit=48 -Wb,-hsail-reg64-pressure-limit=48 ");
+      }
+
+			//   -cl-denorms-are-zero
+			//		std::string("  -save-temps ") +
+			//		std::string("  -Wb,-hsail-reg-slots=8 -Wb,-hsail-reg32-pressure-limit=48 -Wb,-hsail-reg64-pressure-limit=48 ") +
+			//		std::string(" -march=hsail-64  ") +
+
+
+		return 0;
+	}
+
+
+	int aDNNode::update(const adnn_node_parameters & c_descr)
+	{
+//		per_layer_timing_ = c_descr.control.per_layer_timing;
+		//  per layer iterations for timing
+		per_layer_iter_ = (c_descr.control.per_layer_iter) ? c_descr.control.per_layer_iter : per_layer_iter_;
+//		per_layer_messages_ = c_descr.control.per_layer_messages;
+//		debug_level_ = c_descr.control.debug_level;
+		monitor_ = (c_descr.control.monitor) ? c_descr.control.monitor : monitor_;
+
+//		neuron_params_ = c_descr.neuron_params;
+//		update_params_ = c_descr.update_params;
+
+		for (int i = 0; i < c_descr.n_input_nodes; ++i)
+		{
+			if ((void*)c_descr.inputs[i].data && (void*)c_descr.inputs[i].data != (void*)&inputs_[i].getData())
+			{
+				inputs_[i].setData((aDNNTensor*)c_descr.inputs[i].data);
+				inputs_[i].setDataUpdated(true);
+			}
+			if ((void*)c_descr.inputs[i].weights && (void*)c_descr.inputs[i].weights != (void*)&inputs_[i].getWeightsData())
+			{
+				inputs_[i].setWeightData((aDNNTensor*)c_descr.inputs[i].weights);
+				inputs_[i].setWeightsUpdated(true);
+			}
+			if ((void*)c_descr.inputs[i].bias && (void*)c_descr.inputs[i].bias != (void*)&inputs_[i].getBiasData())
+			{
+				inputs_[i].setBiasData((aDNNTensor*)c_descr.inputs[i].bias);
+				inputs_[i].setBiasUpdated(true);
+			}
+		}
+
+
+		for (int i = 0; i < c_descr.n_output_nodes; ++i)
+		{
+			if ((void*)c_descr.outputs[i].data && (void*)c_descr.outputs[i].data != (void*)&outputs_[i].getData())
+			{
+				outputs_[i].setData((aDNNTensor*)c_descr.outputs[i].data);
+				outputs_[i].setDataUpdated(true);
+			}
+		}
+
+		return 0;
+	}
+
+
+	int aDNNode::getNInternalInputEdges(void) const
+	{
+		int count = 0;
+		for (std::vector<aDNNEdge>::const_iterator ii = inputs_.begin(); ii != inputs_.end(); ++ii)
+		{
+			count += ((*ii).getEdgeType() == ADNN_ED_INTERNAL) ? 1 : 0;
+		}
+
+		return(count);
+	}
+
+	int aDNNode::getNInternalOutputEdges(void) const
+	{
+		int count = 0;
+		for (std::vector<aDNNEdge>::const_iterator ii = outputs_.begin(); ii != outputs_.end(); ++ii)
+		{
+			count += ((*ii).getEdgeType() == ADNN_ED_INTERNAL) ? 1 : 0;
+		}
+
+		return(count);
+	}
+
+
+	std::vector<aDNNEdge>::iterator aDNNode::getInputByName(const std::string & name)
+	{
+		std::vector<aDNNEdge>::iterator ret = inputs_.end();
+		for (std::vector<aDNNEdge>::iterator ii = inputs_.begin(); ii != inputs_.end(); ++ii)
+		{
+			if ((*ii).getName().compare(name) == 0)
+			{
+				ret = ii;
+				break;
+			}
+		}
+		return (ret);
+	}
+
+
+	void aDNNode::setInputNode(std::vector<aDNNode*> ::iterator input_node, int edge_indx)
+	{
+		if (inputs_.size() <= edge_indx)
+		{
+			inputs_.resize(edge_indx + 1);
+		}
+		inputs_[edge_indx].setConnectedNode(input_node);
+
+		std::string name = (**input_node).getName();
+		inputs_[edge_indx].setName(name);
+
+	}
+
+	void aDNNode::setOutputNode(std::vector<aDNNode*> ::iterator output_node, int edge_indx)
+	{
+		if (outputs_.size() <= edge_indx)
+		{
+			outputs_.resize(edge_indx + 1);
+		}
+		outputs_[edge_indx].setConnectedNode(output_node);
+
+		std::string name = (**output_node).getName();
+		outputs_[edge_indx].setName(name);
+	}
+
+
+
+
+	int aDNNode::Connect(void)
+	{
+		int ret = 0;
+		return(ret);
+	}
+
+  int aDNNode::Construct(void)
+  {
+    int ret = 0;
+    return(ret);
+  }
+
+  int aDNNode::Build(void)
+  {
+    int ret = 0;
+    // tensor for the host verification
+    if (getDebugLevel() == 1 && isTopData())
+      {
+	aDNNTensor & top_v = getSlot(getTopNm() + ADNN_VERIFY_NM);
+	top_v.allocTensor(_CBUF_MEM_SYS_ONLY);
+      }
+    return(ret);
+  }
+
+  int aDNNode::Run(void)
+	{
+		int ret = 0;
+		return(ret);
+
+	}
+
+	int aDNNode::RunFwd(const adnn_node_parameters * running_params)
+	{
+		int ret = 0;
+		return(ret);
+
+	}
+
+	int aDNNode::RunHostFwd(void)
+	{
+		int ret = 0;
+		return(ret);
+
+	}
+
+
+	int aDNNode::VerifyFwd(void)
+	{
+		int ret = 0;
+
+		return (ret);
+	}
+
+
+	int aDNNode::ConstructInput(cl_command_queue prefered_queue)
+	{
+		int ret = 0;
+		return(ret);
+	}
+
+	int aDNNode::ConstructInputWeights(cl_command_queue prefered_queue)
+	{
+		int ret = 0;
+
+		return(ret);
+	}
+
+	int aDNNode::InitializeInputWeights(void)
+	{
+		int ret = 0;
+
+		return(ret);
+	}
+
+	int aDNNode::ConstructOutput(cl_command_queue prefered_queue)
+	{
+		int ret = 0;
+
+
+
+		// tensor for the host verification
+		if (getDebugLevel() == 1 && isTopData())
+		{
+			const aDNNTensor & top = getTopFwd();
+			cloneSlot(getTopNm() + ADNN_VERIFY_NM, top);
+
+		}
+
+
+		return(ret);
+	}
+
+	int aDNNode::ConstructOptions(void)
+	{
+		int ret = 0;
+
+		return (ret);
+	}
+
+
+  int aDNNode::ConstructBwd(void)
+  {
+    int ret = 0;
+
+    if (isSlotEmpty(getTopDiffNm()))
+      {
+	// it's a part of the net
+	if (isNet())
+	  {
+	    // move prev bot difference to the current top diff
+	    if (getOutputEdgeType() != ADNN_ED_SINK)
+	      {
+		std::vector<aDNNode *>::iterator n = getOutputNode();
+		addSlot(getTopDiffNm(), (**n).getSlot((**n).getBotDiffNm()), true);
+	      }
+	  }
+	else
+	  {
+	    printf("ERROR: aDNNode::ConstructBackward: slot %s is not avaialble\n", getTopDiffNm().c_str());
+	  }
+      }
+
+    if (isSlotEmpty(getBotDiffNm()))
+      {
+	cloneSlot(getBotDiffNm(), getBotFwd());
+      }
+
+    if (getDebugLevel() == 1 && isSlotEmpty(getBotDiffNm() + ADNN_VERIFY_NM))
+      {
+	cloneSlot(getBotDiffNm() + ADNN_VERIFY_NM, getSlot(getBotDiffNm()));
+      }
+
+    return (ret);
+    
+  }
+
+  int aDNNode::BuildBwd(void)
+  {
+    int ret = 0;
+
+    // allocate top diff if it has not been allocaed before
+    if (!isSlotEmpty(getTopDiffNm()))
+      {
+	((aDNNTensor &)getTopDiff()).allocTensor();
+      }
+    if (!isSlotEmpty(getBotDiffNm()))
+      {
+	// allocate bot diff if it has not been allocaed before
+	((aDNNTensor &)getBotDiff()).allocTensor();
+
+	if (getDebugLevel() == 1 && !isSlotEmpty(getBotDiffNm() + ADNN_VERIFY_NM))
+	  {
+	    aDNNTensor & bot_df_vr = getSlot(getBotDiffNm() + ADNN_VERIFY_NM);
+	    bot_df_vr.allocTensor(_CBUF_MEM_SYS_ONLY);
+	  }
+      }
+    return(ret);
+  }
+
+	int aDNNode::RunBwd(const adnn_node_parameters * running_params)
+	{
+		int ret = 0;
+		return(ret);
+
+	}
+
+	int aDNNode::RunHostBwd(void)
+	{
+		int ret = 0;
+		return(ret);
+
+	}
+
+	int aDNNode::VerifyBwd(void)
+	{
+		int ret = 0;
+
+		return (ret);
+	}
+
+
+	int aDNNode::ConstructWeightsBwd(void)
+	{
+		int ret = 0;
+		const aDNNTensor & weights = getBotWeightsFwd();
+		const aDNNTensor & bias = getBotBiasFwd();
+		if (isSlotEmpty(getWeightsDiffNm()))
+		{
+			cloneSlot(getWeightsDiffNm(), weights);
+		}
+		if (isSlotEmpty(getBiasDiffNm()))
+		{
+			cloneSlot(getBiasDiffNm(), bias);
+		}
+
+		// make clones
+		if (getDebugLevel() == 1)
+		{
+			aDNNTensor & weights_df_vf = (aDNNTensor &)cloneSlot(getWeightsDiffNm() + ADNN_VERIFY_NM, getSlot(getWeightsDiffNm()));
+			aDNNTensor & bias_df_vf = (aDNNTensor &)cloneSlot(getBiasDiffNm() + ADNN_VERIFY_NM, getSlot(getBiasDiffNm()));
+		}
+
+// TO DO : CHECK WHAT ALGORITRHM IS USED
+
+		const aDNNTensor & weights_df = getSlot(getWeightsDiffNm());
+		const aDNNTensor & weights_df_hist = cloneSlot(getWeightsDiffNm() + ADNN_HISTORY_NM, weights_df);
+		const aDNNTensor & bias_df = getSlot(getBiasDiffNm());
+		const aDNNTensor & bias_df_hist = cloneSlot(getBiasDiffNm() + ADNN_HISTORY_NM, bias_df);
+		if (getDebugLevel() == 1)
+		{
+			const aDNNTensor & new_weights_vf = cloneSlot(getWeightsNm() + ADNN_VERIFY_NM, weights);
+			const aDNNTensor & new_bias_vf = cloneSlot(getBiasNm() + ADNN_VERIFY_NM, bias);
+
+			const aDNNTensor & weights_df_hist_vf = cloneSlot(getWeightsDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM, weights_df_hist);
+			const aDNNTensor & bias_df_hist_vf = cloneSlot(getBiasDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM, bias_df_hist);
+
+		}
+
+		// weights/bias update
+		{
+
+			std::string kernel_file = "aDNNConvWeightsUpdate.cl";
+
+			// weights
+			{
+
+				const aDNNTensor & weights = getBotWeightsFwd();
+				const aDNNTensor & weights_df = getSlot(getWeightsDiffNm());
+				const aDNNTensor & weights_df_hist = getSlot(getWeightsDiffNm() + ADNN_HISTORY_NM);
+
+				int weights_width = (int)weights.getDim(aDNN_TENSOR_WIDTH);
+				int weights_height = (int)weights.getDim(aDNN_TENSOR_HEIGHT);
+				int weights_stride = (int)weights.getStride(aDNN_TENSOR_WIDTH);
+				int weights_df_stride = (int)weights_df.getStride(aDNN_TENSOR_WIDTH);
+				int weights_df_hist_stride = (int)weights_df_hist.getStride(aDNN_TENSOR_WIDTH);
+
+				int bias_pos = 0; // weights_width - 1;
+
+				int ocl_grp_sz0 = (weights_width <= 12) ? 8 : 16;
+				int ocl_grp_sz1 = (weights_height <= 12) ? 8 : 16;
+				std::string comp_options = getGenericCompOptions();
+
+				comp_options += std::string(" -D ADNN_GROUP_SZ0=") + std::to_string((long long)ocl_grp_sz0)
+					+ std::string(" -D ADNN_GROUP_SZ1=") + std::to_string((long long)ocl_grp_sz1)
+					+ std::string(" -D ADNN_CONV_BIAS_POS=") + std::to_string((long long)bias_pos)
+					+ std::string(" -D ADNN_CONV_WEIGHTS_STRIDE=") + std::to_string((long long)weights_stride)
+					+ std::string(" -D ADNN_CONV_WEIGHTS_DF_STRIDE=") + std::to_string((long long)weights_df_stride)
+					+ std::string(" -D ADNN_CONV_WEIGHTS_DF_HIST_STRIDE=") + std::to_string((long long)weights_df_hist_stride)
+					;
+
+
+				std::vector<size_t> l_wk;
+				l_wk.push_back(ocl_grp_sz0);
+				l_wk.push_back(ocl_grp_sz1);
+				l_wk.push_back(1);
+
+
+				std::vector<size_t> g_wk;
+				g_wk.push_back(weights_width);
+				g_wk.push_back(weights_height);
+				g_wk.push_back(1);
+
+				std::string kernel_name = "aDNNWeightUpdateSGD";
+
+				CDNN_OCL_kern_exe kern_exe(this, kernel_name, kernel_file, comp_options, 0, &g_wk, &l_wk, 0);
+
+				kern_exe.Construct();
+
+				ocl_update_execs_.push_back(kern_exe);
+
+			}
+
+
+			// bias
+			{
+				const aDNNTensor & bias = getBotBiasFwd();
+				const aDNNTensor & bias_df = getSlot(getBiasDiffNm());
+				const aDNNTensor & bias_df_hist = getSlot(getBiasDiffNm() + ADNN_HISTORY_NM);
+
+				int weights_width = (int)bias.getDim(aDNN_TENSOR_WIDTH);
+				int weights_height = (int)bias.getDim(aDNN_TENSOR_HEIGHT);
+				int weights_stride = (int)bias.getStride(aDNN_TENSOR_WIDTH);
+				int weights_df_stride = (int)bias_df.getStride(aDNN_TENSOR_WIDTH);
+				int weights_df_hist_stride = (int)bias_df_hist.getStride(aDNN_TENSOR_WIDTH);
+
+				int bias_pos = 0;
+
+				int ocl_grp_sz0 = (weights_width <= 12) ? 8 : 16;
+				int ocl_grp_sz1 = (weights_height <= 1) ? 1 : (weights_height <= 12) ? 8 : 16;
+
+				std::string comp_options = getGenericCompOptions();
+
+				comp_options += std::string(" -D ADNN_GROUP_SZ0=") + std::to_string((long long)ocl_grp_sz0)
+					+ std::string(" -D ADNN_GROUP_SZ1=") + std::to_string((long long)ocl_grp_sz1)
+					+ std::string(" -D ADNN_CONV_BIAS_POS=") + std::to_string((long long)bias_pos)
+					+ std::string(" -D ADNN_CONV_WEIGHTS_STRIDE=") + std::to_string((long long)weights_stride)
+					+ std::string(" -D ADNN_CONV_WEIGHTS_DF_STRIDE=") + std::to_string((long long)weights_df_stride)
+					+ std::string(" -D ADNN_CONV_WEIGHTS_DF_HIST_STRIDE=") + std::to_string((long long)weights_df_hist_stride)
+					;
+
+
+				std::vector<size_t> l_wk;
+				l_wk.push_back(ocl_grp_sz0);
+				l_wk.push_back(ocl_grp_sz1);
+				l_wk.push_back(1);
+
+
+				std::vector<size_t> g_wk;
+				g_wk.push_back(weights_width);
+				g_wk.push_back(weights_height);
+				g_wk.push_back(1);
+
+				std::string kernel_name = "aDNNWeightUpdateSGD";
+
+				CDNN_OCL_kern_exe kern_exe(this, kernel_name, kernel_file, comp_options, 0, &g_wk, &l_wk, 0);
+
+				kern_exe.Construct();
+
+				ocl_update_execs_.push_back(kern_exe);
+
+
+			}
+
+		}
+		return (ret);
+	}
+
+	int aDNNode::BuildWeightsBwd(void)
+	{
+		int ret = 0;
+		aDNNTensor & weights_diff = (aDNNTensor & )getWeightsDiff();
+		aDNNTensor & bias_diff = (aDNNTensor &)getBiasDiff();
+		ret = weights_diff.allocTensor();
+		ret = bias_diff.allocTensor();
+
+		// make clones
+		if (getDebugLevel() == 1)
+		{
+			aDNNTensor & weights_df_vr = getSlot(getWeightsDiffNm() + ADNN_VERIFY_NM);
+			aDNNTensor & bias_df_vr = getSlot(getBiasDiffNm() + ADNN_VERIFY_NM);
+			weights_df_vr.allocTensor(_CBUF_MEM_SYS_ONLY);
+			bias_df_vr.allocTensor(_CBUF_MEM_SYS_ONLY);
+
+		}
+
+// update
+		if (!ocl_update_execs_.empty())
+		{
+			// weights
+			{
+				const aDNNTensor & weights = getBotWeightsFwd();
+				const aDNNTensor & weights_df = getSlot(getWeightsDiffNm());
+				aDNNTensor & weights_df_hist = (aDNNTensor &)getSlot(getWeightsDiffNm() + ADNN_HISTORY_NM);
+
+				ret = weights_df_hist.allocTensor();
+				adnn_data_init_parameters init_params;
+				memset(&init_params, 0, sizeof(adnn_data_init_parameters));
+				// zero out histrory ata the start
+				init_params.init_distr = ADNN_WD_CONSTANT;
+				init_params.mean = 0;
+				ret |= weights_df_hist.initTensor(init_params);
+
+
+				if (getDebugLevel() == 1)
+				{
+					aDNNTensor & weights_df_hist_vf = (aDNNTensor &)getSlot(getWeightsDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM);
+					ret = weights_df_hist_vf.allocTensor(ADNN_MEM_ALLOCSYS_ONLY);
+					ret = weights_df_hist_vf.initTensor(init_params);
+
+					aDNNTensor & new_weights_vf = getSlot(getWeightsNm() + ADNN_VERIFY_NM);
+
+					ret = new_weights_vf.allocTensor(ADNN_MEM_ALLOCSYS_ONLY);
+
+				}
+
+				cl_mem weights_df_mem = weights_df.getOCLBuffer();
+				cl_mem weights_mem = weights.getOCLBuffer();
+				cl_mem weights_hist_mem = weights_df_hist.getOCLBuffer();
+				aDType momentum = (aDType)getMomentum(true);
+
+
+				int n_arg = 0;
+				ocl_args kern_args;
+				kern_args[n_arg++] = std::make_pair(sizeof(cl_mem), &weights_df_mem);
+				kern_args[n_arg++] = std::make_pair(sizeof(cl_mem), &weights_mem);
+				kern_args[n_arg++] = std::make_pair(sizeof(cl_mem), &weights_hist_mem);
+				kern_args[n_arg++] = std::make_pair(sizeof(aDType), &momentum);
+
+				CDNN_OCL_kern_exe & kern_exe = ocl_update_execs_[0];
+
+				kern_exe.Build(kern_args);
+
+			}
+
+			// bias
+			{
+				const aDNNTensor & weights = getBotBiasFwd();
+				const aDNNTensor & weights_df = getSlot(getBiasDiffNm());
+				aDNNTensor & weights_df_hist = (aDNNTensor &)getSlot(getBiasDiffNm() + ADNN_HISTORY_NM);
+
+				ret = weights_df_hist.allocTensor();
+				adnn_data_init_parameters init_params;
+				memset(&init_params, 0, sizeof(adnn_data_init_parameters));
+				// zero out histrory ata the start
+				init_params.init_distr = ADNN_WD_CONSTANT;
+				init_params.mean = 0;
+				ret |= weights_df_hist.initTensor(init_params);
+
+
+				if (getDebugLevel() == 1)
+				{
+					aDNNTensor & weights_df_hist_vf = (aDNNTensor &)getSlot(getBiasDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM);
+					ret = weights_df_hist_vf.allocTensor(ADNN_MEM_ALLOCSYS_ONLY);
+					ret = weights_df_hist_vf.initTensor(init_params);
+					aDNNTensor & new_bias_vf = getSlot(getBiasNm() + ADNN_VERIFY_NM);
+					ret = new_bias_vf.allocTensor(ADNN_MEM_ALLOCSYS_ONLY);
+
+				}
+
+				cl_mem weights_df_mem = weights_df.getOCLBuffer();
+				cl_mem weights_mem = weights.getOCLBuffer();
+				cl_mem weights_hist_mem = weights_df_hist.getOCLBuffer();
+				aDType momentum = (aDType)getMomentum(false);
+
+
+				int n_arg = 0;
+				ocl_args kern_args;
+				kern_args[n_arg++] = std::make_pair(sizeof(cl_mem), &weights_df_mem);
+				kern_args[n_arg++] = std::make_pair(sizeof(cl_mem), &weights_mem);
+				kern_args[n_arg++] = std::make_pair(sizeof(cl_mem), &weights_hist_mem);
+				kern_args[n_arg++] = std::make_pair(sizeof(aDType), &momentum);
+
+				CDNN_OCL_kern_exe & kern_exe = ocl_update_execs_[1];
+
+				kern_exe.Build(kern_args);
+
+			}
+
+		}
+		return (ret);
+	}
+
+
+	int aDNNode::calculateUpdateRates(aDType & rate, aDType & decay, bool weights)
+	{
+		int ret = 0;
+		size_t counter = getInternalCounter();
+		double global_rate = (isNet()) ? getLearningRate<double>(getNet().getLearningParams(weights), counter) : 1;
+		double global_decay = (isNet()) ? getNet().getDecay(weights) : 1;
+		double local_rate = getLearningRate<double>(getLearningParams(weights), counter);
+		double local_decay = getDecay(weights);
+		rate = (aDType)(global_rate * local_rate);
+		decay = (aDType)(global_decay * local_decay);
+		return(ret);
+	}
+
+
+	int aDNNode::UpdateWeights(void)
+	{
+		int ret = 0;
+
+// update counter
+		setInternalCounter(getInternalCounter() + 1);
+		return(ret);
+	}
+
+	int aDNNode::UpdateWeightsHost(void)
+	{
+		int ret = 0;
+		aDType cur_weights_l_rate;
+		aDType cur_weights_decay;
+		aDType cur_bias_l_rate;
+		aDType cur_bias_decay;
+		calculateUpdateRates(cur_weights_l_rate, cur_weights_decay);
+		calculateUpdateRates(cur_bias_l_rate, cur_bias_decay, false);
+		aDType we_momentum = (aDType)getMomentum(true);  // weights monentum
+		aDType bi_momentum = (aDType)getMomentum(false);
+
+		//weights
+		{
+
+			aDNNTensor & weights = (aDNNTensor &)getBotWeightsFwd();
+			aDNNTensor & weights_v = (aDNNTensor &)getSlot(getWeightsNm() + ADNN_VERIFY_NM);
+			aDNNTensor & weights_df = (aDNNTensor &)getWeightsDiff();
+			aDNNTensor & weights_df_hist_v = getSlot(getWeightsDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM);
+
+
+			int weights_width = (int)weights_v.getDim(aDNN_TENSOR_WIDTH);
+			int weights_height = (int)weights_v.getDim(aDNN_TENSOR_HEIGHT);
+			int weights_stride = (int)weights.getStride(aDNN_TENSOR_WIDTH);
+			int weights_v_stride = (int)weights_v.getStride(aDNN_TENSOR_WIDTH);
+			int weights_df_stride = (int)weights_df.getStride(aDNN_TENSOR_WIDTH);
+			int weights_df_hist_stride = (int)weights_df_hist_v.getStride(aDNN_TENSOR_WIDTH);
+
+			aDType * weights_ptr = (aDType *)weights.accessTensor(ADNN_MEM_ACCESS_READ);
+			aDType * weights_v_ptr = (aDType *)weights_v.accessTensor(ADNN_MEM_ACCESS_WRITE);
+			aDType * weights_df_ptr = (aDType *)weights_df.accessTensor(ADNN_MEM_ACCESS_READ);
+			aDType * weights_df_hist_v_ptr = (aDType *)weights_df_hist_v.accessTensor(ADNN_MEM_ACCESS_READ | ADNN_MEM_ACCESS_WRITE);
+			for (int j = 0; j < weights_height; ++j)
+			{
+				for (int i = 0; i < weights_width; ++i)
+				{
+					aDType we_out;
+					aDType we_hist_out;
+					aDType we_hist = weights_df_hist_v_ptr[j * weights_df_hist_stride + i];
+					aDType we_df = weights_df_ptr[j * weights_df_stride + i];
+					aDType we = weights_ptr[j * weights_stride + i];
+					annCalculateWeightsUpdate(&we_hist_out, &we_out,
+						we_hist, we_df, we,
+						we_momentum,
+						cur_weights_l_rate, cur_weights_decay
+						);
+					weights_df_hist_v_ptr[j * weights_df_hist_stride + i] = we_hist_out;
+					weights_v_ptr[j * weights_v_stride + i] = we_out;
+				}
+			}
+
+			weights.commitTensor();
+			weights_v.commitTensor();
+			weights_df.commitTensor();
+			weights_df_hist_v.commitTensor();
+
+		}
+
+		//bias
+	{
+
+		aDNNTensor & weights = (aDNNTensor &)getBotBiasFwd();
+		aDNNTensor & weights_v = (aDNNTensor &)getSlot(getBiasNm() + ADNN_VERIFY_NM);
+		aDNNTensor & weights_df = (aDNNTensor &)getBiasDiff();
+		aDNNTensor & weights_df_hist_v = getSlot(getBiasDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM);
+
+
+		int weights_width = (int)weights.getDim(aDNN_TENSOR_WIDTH);
+		int weights_height = (int)weights.getDim(aDNN_TENSOR_HEIGHT);
+		int weights_stride = (int)weights.getStride(aDNN_TENSOR_WIDTH);
+		int weights_v_stride = (int)weights_v.getStride(aDNN_TENSOR_WIDTH);
+		int weights_df_stride = (int)weights_df.getStride(aDNN_TENSOR_WIDTH);
+		int weights_df_hist_stride = (int)weights_df_hist_v.getStride(aDNN_TENSOR_WIDTH);
+
+		aDType * weights_ptr = (aDType *)weights.accessTensor(ADNN_MEM_ACCESS_READ);
+		aDType * weights_v_ptr = (aDType *)weights_v.accessTensor(ADNN_MEM_ACCESS_WRITE);
+		aDType * weights_df_ptr = (aDType *)weights_df.accessTensor(ADNN_MEM_ACCESS_READ);
+		aDType * weights_df_hist_v_ptr = (aDType *)weights_df_hist_v.accessTensor(ADNN_MEM_ACCESS_READ | ADNN_MEM_ACCESS_WRITE);
+		for (int j = 0; j < weights_height; ++j)
+		{
+			for (int i = 0; i < weights_width; ++i)
+			{
+				aDType we_out;
+				aDType we_hist_out;
+				aDType we_hist = weights_df_hist_v_ptr[j * weights_df_hist_stride + i];
+				aDType we_df = weights_df_ptr[j * weights_df_stride + i];
+				aDType we = weights_ptr[j * weights_stride + i];
+				annCalculateWeightsUpdate(&we_hist_out, &we_out,
+					we_hist, we_df, we,
+					bi_momentum,
+					cur_weights_l_rate, cur_weights_decay
+					);
+				weights_df_hist_v_ptr[j * weights_df_hist_stride + i] = we_hist_out;
+				weights_v_ptr[j * weights_v_stride + i] = we_out;
+			}
+		}
+
+		weights.commitTensor();
+		weights_v.commitTensor();
+		weights_df.commitTensor();
+		weights_df_hist_v.commitTensor();
+
+	}
+
+	return(ret);
+	}
+
+	int aDNNode::VerifyUpdateWeights(void)
+	{
+		int ret = 0;
+		int match = 1;
+		//weights
+		{
+
+			aDNNTensor & weights = (aDNNTensor &)getBotWeightsFwd();
+			aDNNTensor & weights_v = (aDNNTensor &)getSlot(getWeightsNm() + ADNN_VERIFY_NM);
+			aDNNTensor & weights_df = (aDNNTensor &)getWeightsDiff();
+			aDNNTensor & weights_df_hist_v = getSlot(getWeightsDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM);
+
+			int weights_width = (int)weights.getDim(aDNN_TENSOR_WIDTH);
+			int weights_height = (int)weights.getDim(aDNN_TENSOR_HEIGHT);
+			int weights_stride = (int)weights.getStride(aDNN_TENSOR_WIDTH);
+			int weights_v_stride = (int)weights_v.getStride(aDNN_TENSOR_WIDTH);
+
+			aDType * weights_ptr = (aDType *)weights.accessTensor(ADNN_MEM_ACCESS_READ);
+			aDType * weights_v_ptr = (aDType *)weights_v.accessTensor(ADNN_MEM_ACCESS_READ);
+			double allowedEps = 2;
+			for (int j = 0; j < weights_height && match; ++j)
+			{
+				for (int i = 0; i < weights_width && match; ++i)
+				{
+					aDType c_val = weights_v_ptr[j * weights_v_stride + i];
+					aDType g_val = weights_ptr[j * weights_stride + i];
+					double err = CalculateErr(c_val, g_val);
+					if (err > allowedEps && std::abs(c_val - g_val) > 0.0000001)
+					{
+						std::cout << "Difference in weights update " << err << " too large at " << i << "," << j << " c_v = " << c_val << " vs g_val = " << g_val << std::endl;
+						match = 0;
+					}
+				}
+			}
+
+			weights_v.commitTensor();
+			weights.commitTensor();
+
+		}
+
+		//bias
+		if (match)
+		{
+
+			aDNNTensor & weights = (aDNNTensor &)getBotBiasFwd();
+			aDNNTensor & weights_v = (aDNNTensor &)getSlot(getBiasNm() + ADNN_VERIFY_NM);
+			aDNNTensor & weights_df = (aDNNTensor &)getBiasDiff();
+			aDNNTensor & weights_df_hist_v = getSlot(getBiasDiffNm() + ADNN_HISTORY_NM + ADNN_VERIFY_NM);
+
+			int weights_width = (int)weights.getDim(aDNN_TENSOR_WIDTH);
+			int weights_height = (int)weights.getDim(aDNN_TENSOR_HEIGHT);
+			int weights_stride = (int)weights.getStride(aDNN_TENSOR_WIDTH);
+			int weights_v_stride = (int)weights_v.getStride(aDNN_TENSOR_WIDTH);
+
+			aDType * weights_ptr = (aDType *)weights.accessTensor(ADNN_MEM_ACCESS_READ);
+			aDType * weights_v_ptr = (aDType *)weights_v.accessTensor(ADNN_MEM_ACCESS_READ);
+			double allowedEps = 2;
+			for (int j = 0; j < weights_height && match; ++j)
+			{
+				for (int i = 0; i < weights_width && match; ++i)
+				{
+					aDType c_val = weights_v_ptr[j * weights_v_stride + i];
+					aDType g_val = weights_ptr[j * weights_stride + i];
+					double err = CalculateErr(c_val, g_val);
+					if (err > allowedEps && std::abs(c_val - g_val) > 0.0000001)
+					{
+						std::cout << "Difference bias update " << err << " too large at " << i << "," << j << " c_v = " << c_val << " vs g_val = " << g_val << std::endl;
+						match = 0;
+					}
+				}
+			}
+
+			weights_v.commitTensor();
+			weights.commitTensor();
+		}
+
+		if (match)
+		{
+			std::cout << "Passed varifier: weights update: " << getName() << std::endl;
+		}
+
+		return(ret);
+	}
+
+	int aDNNode::UpdateWeightsInternal(void)
+	{
+		int ret = 0;
+
+		// rates changes
+		aDType cur_weights_l_rate;
+		aDType cur_weights_decay;
+		aDType cur_bias_l_rate;
+		aDType cur_bias_decay;
+		calculateUpdateRates(cur_weights_l_rate, cur_weights_decay);
+		calculateUpdateRates(cur_bias_l_rate, cur_bias_decay, false);
+		// weights
+		// execute through specialized object
+		ocl_args additional_args;
+		additional_args[4] = std::make_pair(sizeof(aDType), &cur_weights_l_rate);
+		additional_args[5] = std::make_pair(sizeof(aDType), &cur_weights_decay);
+
+
+		ret = ocl_update_execs_[0].ExecuteNoWait(&additional_args);
+		// bias
+
+		additional_args.clear();
+		additional_args[4] = std::make_pair(sizeof(aDType), &cur_bias_l_rate);
+		additional_args[5] = std::make_pair(sizeof(aDType), &cur_bias_decay);
+
+		ret = ocl_update_execs_[1].ExecuteNoWait(&additional_args);
+
+		return(ret);
+	}
+
+
+	int aDNNode::getSlotsNames(const char** nm_list) const
+	{
+		int ret = 0;
+		std::map<std::string, aDNNTensor *>::const_iterator ci;
+		int i = 0;
+		for (ci = used_tensors_.begin(); ci != used_tensors_.end(); ++ci, ++i)
+		{
+			nm_list[i] = (*ci).first.c_str();
+		}
+		return(ret);
+	}
+
+
+	const void * aDNNode::getBaseOcl(void) const
+	{
+		const ADNNLib * lib = (ADNNLib *)getParent();
+
+		const void * ocl = lib->getOclBackEnd();
+		return(ocl);
+	}
+
+
+	aDNNTensor & aDNNode::createSlot(const std::string & name, const adnn_data_parameters & c_descr, bool reference)
+	{
+
+		// add to the list of tensors referred by this node
+		aDNNTensor * tens = ((ADNNLib*)getParent())->createTensor(c_descr);
+
+		if (!reference)
+		{
+			// owned by the layer
+			owned_tensors_[tens] = name;
+		}
+		// add to the list of tensors referred by this node
+		used_tensors_[name] = tens;
+
+		return(*(used_tensors_[name]));
+	}
+
+	aDNNTensor & aDNNode::addSlot(const std::string & name, const aDNNTensor & tens, bool reference)
+	{
+
+		if (!reference)
+		{
+			// owned by the layer
+			owned_tensors_[(aDNNTensor*)&tens] = name;
+		}
+		// add to the list of tensors referred by this node
+		used_tensors_[name] = (aDNNTensor*)&tens;
+
+		return(*(used_tensors_[name]));
+
+	}
+
+	aDNNTensor & aDNNode::cloneSlot(const std::string & name, const aDNNTensor & orig, bool reference)
+	{
+		adnn_data_parameters descr;
+		orig.getParams(descr);
+		for (int i = 0; i < ADNN_MAX_TENSOR_DIM; ++i)
+		{
+			descr.strides[i] = 0;
+		}
+		return(createSlot(name, descr, reference));
+	}
+
+	aDNNTensor & aDNNode::getSlot(const std::string & name)
+	{
+		aDNNTensor * ret = 0;
+		ret = used_tensors_[name];
+//		assert(ret);
+		if (!ret)
+		{
+			printf("ERROR: aDNNode::getSlot : not found slot %s\n", name.c_str());
+		}
+		return(*ret);
+	}
+
+	bool aDNNode::isSlotEmpty(const std::string & name)
+	{
+		aDNNTensor * ret = NULL;
+		ret = used_tensors_[name];
+		return(ret == NULL);
+	}
+
+
+
+
+} // adnn
+
+
+
+
+
+
+
+

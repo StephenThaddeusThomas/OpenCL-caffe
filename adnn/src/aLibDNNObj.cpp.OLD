@@ -1,0 +1,107 @@
+/**********************************************************************
+Copyright ©2015 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+•	Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+•	Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or
+ other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+********************************************************************/
+// to share code with between CPU and GPU
+
+#include "aDNNInternal.hpp"
+
+
+namespace adnn
+{
+	/*------------------------------------------------------------------------------------------------------------*/
+	// CDNN_Object
+	//
+	/*------------------------------------------------------------------------------------------------------------*/
+
+
+	CDNN_Object :: CDNN_Object()
+	{
+		parent_ = 0;
+		wrapper_ = 0;
+		ref_obj_ = 0;
+		name_ = "";
+		type_ = ADNN_OBJECT_GENERIC;
+
+	}
+		
+	CDNN_Object::CDNN_Object(CDNN_Object * _parent, void *_wrapper, std::string _name, ANN_OBJECT_TYPE _type, CDNN_Object * ref_obj)
+	{
+		parent_ = _parent;
+		wrapper_ = _wrapper;
+		name_ = _name;
+		type_ = _type;
+		ref_obj_ = ref_obj;
+		if ( parent_ )
+		{
+			parent_->attachObj(this);
+		}
+	}
+
+	CDNN_Object::~CDNN_Object(void)
+	{
+		cleanUp();
+	}
+
+	void CDNN_Object::attachObj(void * _obj)
+	{
+		if (!parent_)
+		{
+			objs_.push_back(_obj);
+		}
+	}
+
+	void CDNN_Object::removeObj(void * _obj)
+	{
+		if (!parent_)
+		{
+			std::vector<void *>::iterator it;
+
+			it = std::find(objs_.begin(), objs_.end(), _obj);
+			if (it == objs_.end())
+			{
+				std::cout << "Object not found in LibDNN\n";
+				return;
+			}
+			objs_.erase(it);
+		}
+	}
+
+	int CDNN_Object::cleanUp(void)
+	{
+		int ret = ADNN_SUCCESS;
+
+		if (!parent_)
+		{
+			for (std::vector<void*>::iterator i = objs_.begin(); i != objs_.end(); i++)
+			{
+				CDNN_Object * obj = (CDNN_Object*)(*i);
+				if (obj->getType() != ADNN_OBJECT_LIBRARY)
+				{
+					delete obj;
+				}
+			}
+			objs_.clear();
+		}
+		return (ret);
+	}
+
+
+} // adnn
+
+
+
+
+
+

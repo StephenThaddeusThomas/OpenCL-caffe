@@ -1,0 +1,691 @@
+//File: aDNNTensor.hpp
+//Path:/c/AMD/MLopen/aDNN/src
+
+/**********************************************************************
+Copyright ?2015 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+?	Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+?	Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or
+ other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+********************************************************************/
+
+
+#ifndef ADNN_H_
+#define ADNN_H_
+
+// TEMP
+#include <cstdlib>
+#include <cmath>
+#include <limits>
+#include "AMDnn.h"
+#include "AMDnn.hpp"
+#include "CABuf.hpp" // TT: Templates
+
+namespace adnn
+{
+  ///////////////////////////////////////////////////////////
+  //
+  ///////////////////////////////////////////////////////////
+#define ADNN_MM_TRANSPOSE 1
+  template <typename Dtype>
+  void ADNN_mm_cpu(const Dtype * a_ptr, size_t a_cols, size_t a_rows, size_t a_stride, int a_flags,
+		   const Dtype * b_ptr, size_t b_cols, size_t b_rows, size_t b_stride, int b_flags,
+		   Dtype * c_ptr, size_t c_cols, size_t c_rows, size_t c_stride, int c_flags,
+		   double d_alpha, double d_beta)
+  {
+    // mA
+
+    // mB
+
+    // mC
+    Dtype alpha = (Dtype)d_alpha;
+    Dtype beta = (Dtype)d_beta;
+    if((!(a_flags & ADNN_MM_TRANSPOSE) && !(b_flags & ADNN_MM_TRANSPOSE) && ((a_cols != b_rows) || (a_rows != c_rows) || (b_cols != c_cols)))
+      ||((a_flags & ADNN_MM_TRANSPOSE) && (b_flags & ADNN_MM_TRANSPOSE) && ((a_rows != b_cols) || (a_cols != c_rows) || (b_rows != c_cols)))
+      ||((a_flags & ADNN_MM_TRANSPOSE) && !(b_flags & ADNN_MM_TRANSPOSE) && ((a_rows != b_rows) || (a_cols != c_rows) || (b_cols != c_cols)))
+      ||(!(a_flags & ADNN_MM_TRANSPOSE) && (b_flags & ADNN_MM_TRANSPOSE) && ((a_cols != b_cols) || (a_rows != c_rows) || (b_rows != c_cols))))
+      {
+	printf("MM_CPU ERROR; %zd %zd   %zd %zd   %zd %zd\n", a_cols, a_rows, b_cols, b_rows, c_rows, c_cols);
+	return;
+      }
+
+    size_t inner_loop = (!(a_flags & ADNN_MM_TRANSPOSE)) ? a_cols : a_rows;
+    
+    if (!(a_flags & ADNN_MM_TRANSPOSE) && !(b_flags & ADNN_MM_TRANSPOSE))
+      {
+	for (size_t n = 0; n < c_rows; ++n)
+	  {
+	    for (size_t k = 0; k < c_cols; ++k)
+	      {
+		Dtype mm_e = 0;
+		for (size_t m = 0; m < inner_loop; ++m)
+		  {
+		    mm_e += a_ptr[n*a_stride + m] * b_ptr[m*b_stride + k];
+		  }
+		c_ptr[n*c_stride + k] = beta * c_ptr[n*c_stride + k] + alpha * mm_e;
+	      }
+	  }
+      }
+    else if ((a_flags & ADNN_MM_TRANSPOSE) && !(b_flags & ADNN_MM_TRANSPOSE))
+      {
+	for (size_t n = 0; n < c_rows; ++n)
+	  {
+	    for (size_t k = 0; k < c_cols; ++k)
+	      {
+		Dtype mm_e = 0;
+		for (size_t m = 0; m < inner_loop; ++m)
+		  {
+		    mm_e += a_ptr[m*a_stride + n] * b_ptr[m*b_stride + k];
+#if 0
+		    if ((n == 0 && k == 7
+		      || n == 2 && k == 6
+		      || n == 4 && k == 5
+		      || n == 10 && k == 2
+		      || n == 12 && k == 1
+		      || n == 14 && k == 0
+			 /*
+			   || n == 7 && k == 9
+			   || n == 8 && k == 8
+			   || n == 10 && k == 3
+			   || n == 11 && k == 2
+			   || n == 12 && k == 1
+			   || n == 13 && k == 0
+			 */
+			 )
+			&& a_ptr[m*a_stride + n] * b_ptr[m*b_stride + k] != 0 )
+		      {
+			printf("C:mm: %d %d %d   %11.9f %11.9f %11.9f %11.9f\n",
+			       n, k, m,
+			       mm_e, a_ptr[m*a_stride + n], b_ptr[m*b_stride + k], a_ptr[m*a_stride + n] * b_ptr[m*b_stride + k]);
+		      }
+#endif
+		  }
+		c_ptr[n*c_stride + k] = beta * c_ptr[n*c_stride + k] + alpha * mm_e;
+	      }
+	  }
+      }
+    else if (!(a_flags & ADNN_MM_TRANSPOSE) && (b_flags & ADNN_MM_TRANSPOSE))
+      {
+	for (size_t n = 0; n < c_rows; ++n)
+	  {
+	    for (size_t k = 0; k < c_cols; ++k)
+	      {
+		Dtype mm_e = 0;
+		for (size_t m = 0; m < inner_loop; ++m)
+		  {
+		    mm_e += a_ptr[n*a_stride + m] * b_ptr[k*b_stride + m];
+#if 0
+		    if (n == 0 && k == 6 && a_ptr[n*a_stride + m] * b_ptr[k*b_stride + m] != 0)
+		      {
+			printf("%4d  %11.9f %11.9f %11.9f\n", m, mm_e, a_ptr[n*a_stride + m], b_ptr[k*b_stride + m]);
+		      }
+#endif
+		  }
+		c_ptr[n*c_stride + k] = beta * c_ptr[n*c_stride + k] + alpha * mm_e;
+	      }
+	  }
+      }
+    else
+      {
+	for (size_t n = 0; n < c_rows; ++n)
+	  {
+	    for (size_t k = 0; k < c_cols; ++k)
+	      {
+		Dtype mm_e = 0;
+		for (size_t m = 0; m < inner_loop; ++m)
+		  {
+		    c_ptr[n*c_stride + k] += a_ptr[m*a_stride + n] * b_ptr[k*b_stride + m];
+		  }
+		c_ptr[n*c_stride + k] = beta * c_ptr[n*c_stride + k] + alpha * mm_e;
+	      }
+	  }
+      }
+  }
+
+  template <typename Dtype>
+  void ADNN_im2col_cpu(const Dtype* data_im, const int channels,
+		       const int height, const int width, const int ksize, const int pad,
+		       const int stride, Dtype* data_col, int stride_col = 0)
+  {
+    int height_col = (height + 2 * pad - ksize) / stride + 1;
+    int width_col = (width + 2 * pad - ksize) / stride + 1;
+    stride_col = (stride_col == 0) ? height_col * width_col : stride_col;
+    int channels_col = channels * ksize * ksize;
+    for (int c = 0; c < channels_col; ++c)
+      {
+	int w_offset = c % ksize;
+	int h_offset = (c / ksize) % ksize;
+	int c_im = c / ksize / ksize;
+	for (int h = 0; h < height_col; ++h)
+	  {
+	    for (int w = 0; w < width_col; ++w)
+	      {
+		int h_pad = h * stride - pad + h_offset;
+		int w_pad = w * stride - pad + w_offset;
+		if (h_pad >= 0 && h_pad < height && w_pad >= 0 && w_pad < width)
+		  {
+		    data_col[c * stride_col + h * width_col + w] = data_im[(c_im * height + h_pad) * width + w_pad];
+		  }
+		else
+		  {
+		    data_col[c * stride_col + h * width_col + w] = 0;
+		  }
+	      }
+	  }
+      }
+  }
+
+  template <typename Dtype>
+  void ADNN_col2im_cpu(const Dtype* data_col, const int channels,
+		       const int height, const int width, const int ksize, const int pad,
+		       const int stride, Dtype* data_im)
+  {
+    memset(data_im, 0, sizeof(Dtype) * height * width * channels);
+    int height_col = (height + 2 * pad - ksize) / stride + 1;
+    int width_col = (width + 2 * pad - ksize) / stride + 1;
+    int channels_col = channels * ksize * ksize;
+    for (int c = 0; c < channels_col; ++c)
+      {
+	int w_offset = c % ksize;
+	int h_offset = (c / ksize) % ksize;
+	int c_im = c / ksize / ksize;
+	for (int h = 0; h < height_col; ++h)
+	  {
+	    for (int w = 0; w < width_col; ++w)
+	      {
+		int h_pad = h * stride - pad + h_offset;
+		int w_pad = w * stride - pad + w_offset;
+		if (h_pad >= 0 && h_pad < height && w_pad >= 0 && w_pad < width)
+		  {
+		    data_im[(c_im * height + h_pad) * width + w_pad] +=	data_col[(c * height_col + h) * width_col + w];
+#if 0
+		    if (c_im == 0 && h_pad == 0 && w_pad == 2)
+		      {
+			printf("C:c2i: %d %d %d %d %d    %14.12f %14.12f\n", c, w, h, w_pad, h_pad, data_im[(c_im * height + h_pad) * width + w_pad], data_col[(c * height_col + h) * width_col + w]);
+		      }
+#endif
+		  }
+	      }
+	  }
+      }
+  }
+
+  enum { ADNN_SUCCESS = 0, ADNN_GENERAL_FAILURE = -1 };
+
+  // deterministic Box-Muller method, uses trigonometric functions
+  // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
+
+  /**
+   * Instantiations of class template normal_distribution model a
+   * \random_distribution. Such a distribution produces random numbers
+   * @c x distributed with probability density function
+   * \f$\displaystyle p(x) =
+   *   \frac{1}{\sqrt{2\pi\sigma}} e^{-\frac{(x-\mu)^2}{2\sigma^2}}
+   * \f$,
+   * where mean and sigma are the parameters of the distribution.
+   */
+
+  template <typename _T>
+  class CGaussianDistr
+  {
+  public:
+
+    CGaussianDistr(_T mean, _T std, bool do_seed = false)
+    {
+      valid_  = false;
+      cached_factor_ = 0;
+      z0_ = 0;
+      z1_ = 0;
+      if (do_seed)
+	{
+	  srand((unsigned int)time(NULL));
+	}
+      mean_ = mean;
+      std_ = std;
+    }
+    _T generateGaussianNoise()
+    {
+      const double epsilon = std::numeric_limits<double>::min(); // was:DBL_MIN; 
+      const double two_pi = 2.0*M_PI;
+
+      if (valid_)
+	{
+	  valid_ = false;
+	  return z1_ * std_ + mean_;
+	}
+      valid_ = true;
+
+      double u1, u2;
+      do
+	{
+	  u1 = rand() * (1.0 / RAND_MAX);
+	  u2 = rand() * (1.0 / RAND_MAX);
+	} while (u1 <= epsilon);
+      
+      z0_ = (_T)(sqrt(-2.0 * log(u1)) * cos(two_pi * u2));
+      z1_ = (_T)(sqrt(-2.0 * log(u1)) * sin(two_pi * u2));
+      return z0_ * std_ + mean_;
+    }
+  protected:
+    bool valid_;
+    _T cached_factor_;
+    _T std_;
+    _T mean_;
+    _T z0_;
+    _T z1_;
+  };
+
+  // Return the current learning rate. The currently implemented learning rate
+  // policies are as follows:
+  //    - fixed: always return base_lr.
+  //    - step: return base_lr * gamma ^ (floor(iter / step))
+  //    - exp: return base_lr * gamma ^ iter
+  //    - inv: return base_lr * (1 + gamma * iter) ^ (- power)
+  // where base_lr, gamma, step and power are defined in the solver parameter
+  // protocol buffer, and iter is the current iteration.
+  template <typename _T>
+  _T getLearningRate(const adnn_lr_policy_params & l_policy, size_t counter)
+  {
+    _T rate = 0;
+
+    switch (l_policy.policy)
+      {
+      case ADNN_LP_FIXED:
+	rate = (_T)l_policy.base;
+	break;
+      case ADNN_LP_LINEAR:
+	rate = (_T)(l_policy.base + l_policy.slope * counter);
+	break;
+      case ADNN_LP_EXP_STEP:
+	{
+	  size_t current_step = (size_t)((_T)counter / l_policy.step);
+	  rate = (_T)(l_policy.base * pow(l_policy.gamma, (double)current_step));
+	}
+	break;
+      case ADNN_LP_EXP:
+	rate = (_T)(l_policy.base * pow(l_policy.gamma, (double)counter));
+	break;
+      case ADNN_LP_EXP_INV:
+	rate = (_T)(l_policy.base * pow(1. + l_policy.gamma *  counter, -l_policy.power));
+	break;
+      default:
+	printf("ERROR: unknown learning policy %d\n", l_policy.policy);
+	break;
+      }
+    return rate;
+  }
+
+  template<typename _T>
+  class CDNN_Tensor : public aDNNTensor
+  {
+  public:
+    CDNN_Tensor() :aDNNTensor()
+    {
+      ocl_buffer_ = NULL;
+      allocated_ = 0;
+      prefered_queue_ = 0;
+    }
+    // TT: called from ADNNLib::createTensor() in aLibDNNInternal.cpp line:105
+    CDNN_Tensor(const ADNNBase & lib, const adnn_data_parameters & c_descr) : aDNNTensor(lib, c_descr)
+    {
+      ocl_buffer_ = NULL;
+      allocated_ = 0;
+      const ADNNLib * n_lib = (const ADNNLib *)getParent();
+      prefered_queue_ = n_lib->getQueue();
+    }
+    CDNN_Tensor(const CDNN_Tensor<_T> & rh) : aDNNTensor(*(aDNNTensor*)&rh)
+    {
+      ocl_buffer_ = rh.ocl_buffer_;
+      allocated_ = rh.allocated_;
+      prefered_queue_ = rh.prefered_queue_;
+    }
+    
+    const CDNN_Tensor & operator=(const CDNN_Tensor & rh)
+    {
+      *(aDNNTensor*)this = *(aDNNTensor*)&rh;
+      ocl_buffer_ = rh.ocl_buffer_;
+      allocated_ = rh.allocated_;
+      prefered_queue_ = rh.prefered_queue_;
+    }
+
+    CDNN_Tensor(const aDNNTensor & rh) : aDNNTensor(rh)
+    {
+      ocl_buffer_ = NULL;
+      allocated_ = 0;
+      const ADNNLib * n_lib = (const ADNNLib *)getParent();
+      prefered_queue_ = n_lib->getQueue();
+    }
+
+    inline int IsInited(void) const		                { return(inited_);		}
+    inline int IsAllocated(uint flags = 0) const		{ return(allocated_);		}
+    inline cl_command_queue getPreferedQueue(void) const	{ return(prefered_queue_);	}
+    inline void setPreferedQueue(cl_command_queue queue)	{prefered_queue_ = queue;	}
+
+    int allocTensor(uint flags = 0, void * data = 0, cl_context context = 0)
+    {
+      int ret = ADNN_SUCCESS;
+      _T * data_ptr = (_T*)data;
+      if (!IsAllocated(flags))
+	{
+	  cl_context curr_context = (context) ? context : context_;
+	  assert(size_ != 0 && curr_context!=0);
+	  ocl_buffer_ = new CABuf<_T>(curr_context);
+	  ocl_buffer_->create(size_, flags, data_ptr);
+	  ocl_mem_ = ocl_buffer_->getCLMem();
+	  allocated_ = 1;
+	}
+      return(ret);
+    }
+
+    void deepCopyBlob(CDNN_Tensor<_T> & source, cl_command_queue queue = 0)
+    {
+      assert(getSizeInBytes() == source.getSizeInBytes());
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      _T *t_ptr = accessTensor(CL_MAP_WRITE_INVALIDATE_REGION, curr_queue);
+      _T *s_ptr = source.accessTensor(CL_MAP_READ);
+      assert(t_ptr && s_ptr);
+      memcpy(t_ptr, s_ptr, getSizeInBytes());
+      commitTensor();
+      source.commitTensor();
+    }
+
+    void * accessTensor(uint flags = 0, cl_command_queue queue = 0)
+    {
+      _T * ret = NULL;
+      if (IsAllocated())
+	{
+	  cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+	  assert(curr_queue);
+	  //	allocTensor((ocl_buffer_) ? ocl_buffer_->getFlags() : 0);
+	  sys_mem_ = ret = ocl_buffer_->map(flags, curr_queue);
+	}
+      else
+	{
+	  printf("ERROR: accessTensor: tensor has not been allocated\n");
+	}
+      return(ret);
+    }
+
+    void commitTensor(void)
+    {
+      ocl_buffer_->unmap();
+      sys_mem_ = NULL;
+    }
+
+    _T * getHostTensor(void)
+    {
+      _T * ret = NULL;
+      ret = ocl_buffer_->getSysMem();
+      return(ret);
+    }
+
+    int writeTensor(cl_command_queue queue = 0, _T * data_ptr = NULL, size_t sz = -1)
+    {
+      int ret = ADNN_SUCCESS;
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      assert(curr_queue);
+
+// TODO: could be aligned!!
+      sz = (!data_ptr)? 0 : sz;
+      ret = ocl_buffer_->copyToDevice(curr_queue, data_ptr, sz);
+
+      return(ret);
+    }
+
+    int readTensor(cl_command_queue queue = 0)
+    {
+      int ret = ADNN_SUCCESS;
+
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      assert(curr_queue);
+      // TO DO: coud be aligned!!
+      // sz = (!data_ptr)? 0 : sz;
+      ret = ocl_buffer_->copyToHost(curr_queue);
+      return(ret);
+    }
+
+  ~CDNN_Tensor(void)
+    {
+      if ( ocl_buffer_ )
+	{
+	  delete ocl_buffer_;
+	  ocl_buffer_ = 0;
+	  allocated_ = 0;
+	}
+    }
+
+    cl_mem getCLMem(void)
+    {
+      return(ocl_buffer_->getCLMem());
+    }
+    
+    const aDNNTensor & mul2(aDNNTensor &  tA, aDNNTensor & tB,
+			    int traspose_A = (int)clblasNoTrans, int transposeB = (int)clblasNoTrans,
+			    double alpha = 1, double beta = 0,
+			    cl_command_queue queue = 0)
+    {
+      cl_event event;
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      assert(curr_queue);
+      clblasOrder order = clblasRowMajor;
+      clblasTranspose transA = (clblasTranspose)traspose_A;
+
+      // inputs
+      size_t a_cols = tA.getDim(aDNN_TENSOR_WIDTH) * tA.getDim(aDNN_TENSOR_HEIGHT) * tA.getDim(aDNN_TENSOR_DEPTH);
+      size_t a_rows = tA.getDim(aDNN_TENSOR_4THDIM);
+
+      //weights
+      size_t b_cols = tB.getDim(aDNN_TENSOR_WIDTH);
+      size_t b_rows = tB.getDim(aDNN_TENSOR_HEIGHT);
+
+      // outputs
+      size_t c_cols = getDim(aDNN_TENSOR_WIDTH) * getDim(aDNN_TENSOR_HEIGHT) * getDim(aDNN_TENSOR_DEPTH);
+      size_t c_rows = getDim(aDNN_TENSOR_4THDIM);
+//    CDNN_Tensor<_T> * running_C = (CDNN_Tensor<_T> * )this;
+      size_t lda = a_cols;       /* i.e. lda = K */
+      clblasTranspose transB = (clblasTranspose)transposeB;
+      size_t ldb = b_cols;        /* i.e. ldb = N */
+      size_t ldc = c_cols;        /* i.e. ldc = N */
+      cl_mem bufA = tA.getOCLBuffer();
+      cl_mem bufB = tB.getOCLBuffer();
+      cl_mem bufC = getOCLBuffer();
+      cl_command_queue runningQ = curr_queue;
+
+      /* Call clblas extended function. Perform gemm for the lower right sub-matrices */
+      int ret = clblasSgemm(order, transA, transB,
+			    a_rows, b_cols, a_cols,
+			    (cl_float)alpha, bufA, 0, lda,
+			    bufB, 0, ldb, (cl_float)beta,
+			    bufC, 0, ldc,
+			    1, &runningQ, 0, NULL, &event);
+      if (ret != CL_SUCCESS) {
+	printf("clblasSgemmEx() failed with %d\n", ret);
+	ret = 1;
+      }
+      else {
+	/* Wait for calculations to be finished. */
+#if 0
+	ret = clWaitForEvents(1, &event);
+	clReleaseEvent(event);
+#endif
+      }
+      return(*this);
+    }
+
+    const aDNNTensor & mul2(size_t c_cols, size_t c_rows,
+			    aDNNTensor & tA, size_t a_cols, size_t a_rows,
+			    aDNNTensor & tB, size_t b_cols, size_t b_rows,
+			    int traspose_A = (int)clblasNoTrans, int transpose_B = (int)clblasNoTrans,
+			    double alpha = 1, double beta = 0,
+			    cl_command_queue queue = 0)
+    {
+      cl_event event;
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      assert(curr_queue);
+
+      //CDNN_Tensor<_T> * running_C = (CDNN_Tensor<_T> * )this;
+
+      clblasOrder order = clblasRowMajor;
+      clblasTranspose transA = (clblasTranspose)traspose_A;
+
+      // inputs
+//	size_t a_cols = tA.getDim(ANN_TENSOR_WIDTH) * tA.getDim(ANN_TENSOR_HEIGHT) * tA.getDim(ANN_TENSOR_DEPTH);
+//	size_t a_rows = tA.getDim(ANN_TENSOR_4THDIM);
+
+      //weights
+//	size_t b_cols = tB.getDim(ANN_TENSOR_WIDTH);
+//	size_t b_rows = tB.getDim(ANN_TENSOR_HEIGHT);
+
+      // outputs
+//	size_t c_cols = getDim(ANN_TENSOR_WIDTH) * getDim(ANN_TENSOR_HEIGHT) * getDim(ANN_TENSOR_DEPTH);
+//	size_t c_rows = getDim(ANN_TENSOR_4THDIM);
+      
+      size_t lda = a_cols;       /* i.e. lda = K */
+      clblasTranspose transB = (clblasTranspose)transpose_B;
+      size_t ldb = b_cols;        /* i.e. ldb = N */
+      size_t ldc = c_cols;        /* i.e. ldc = N */
+      cl_mem bufA = tA.getOCLBuffer();
+      cl_mem bufB = tB.getOCLBuffer();
+      cl_mem bufC = getOCLBuffer();
+      cl_command_queue runningQ = curr_queue;
+
+      /* Call clblas extended function. Perform gemm for the lower right sub-matrices */
+      size_t run_a_rows = (traspose_A) ? a_cols : a_rows;
+      size_t run_a_cols = (traspose_A) ? a_rows : a_cols;
+      size_t run_b_cols = (transpose_B) ? b_rows : b_cols;
+      int ret = clblasSgemm(order, transA, transB,
+			    run_a_rows, run_b_cols, run_a_cols,
+			    (cl_float)alpha, bufA, 0, lda,
+			    bufB, 0, ldb, (cl_float)beta,
+			    bufC, 0, ldc,
+			    1, &runningQ, 0, NULL, &event);
+      if (ret != CL_SUCCESS) {
+	printf("clblasSgemmEx() failed with %d\n", ret);
+	ret = 1;
+      }
+      else {
+	/* Wait for calculations to be finished. */
+#if 0
+	ret = clWaitForEvents(1, &event);
+	clReleaseEvent(event);
+#endif
+      }
+      return(*this);
+    }
+
+    int UniformInit(cl_command_queue queue = 0)
+    {
+      int ret = -1;
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      _T *ptr = (_T *)accessTensor(CL_MAP_WRITE_INVALIDATE_REGION, curr_queue);
+      assert(ptr);
+      if (ptr)
+	{
+	  for (size_t i = 0; i < size_; i++)
+	    {
+	      double norm_distr = ((double)rand() * (1.0 / RAND_MAX));
+	      ptr[i] = (_T)norm_distr;
+	    }
+	  commitTensor();
+	  ret = 0;
+	}
+      return(ret);
+    }
+
+    int CategoryInit(cl_command_queue queue = 0)
+    {
+      int ret = -1;
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      _T *ptr = (_T *)accessTensor(CL_MAP_WRITE_INVALIDATE_REGION, curr_queue);
+      assert(ptr);
+      if (ptr)
+	{
+	  memset(ptr, 0, getSizeInBytes());
+	  size_t stride = getStride(aDNN_TENSOR_WIDTH);
+	  for (size_t j = 0; j < getDim(aDNN_TENSOR_HEIGHT); ++j)
+	    {
+	      int index = (int)((double)getDim(aDNN_TENSOR_WIDTH) * rand() * (1.0 / RAND_MAX));
+	      ptr[stride * j + index] = (_T)1;
+	    }
+	  commitTensor();
+	  ret = 0;
+	}
+      return(ret);
+    }
+
+    int GaussianInit(double mean, double std, cl_command_queue queue = 0)
+    {
+      int ret = -1;
+      cl_command_queue curr_queue = (queue != 0) ? queue : prefered_queue_;
+      _T *ptr = (_T *)accessTensor(CL_MAP_WRITE_INVALIDATE_REGION, curr_queue);
+      assert(ptr);
+      if (ptr)
+	{
+	  CGaussianDistr<double> g((double)mean, (double)std);
+
+	  for (size_t i = 0; i < size_; i++)
+	    {
+	      double norm_distr = g.generateGaussianNoise();
+	      ptr[i] = (_T)norm_distr;
+	    }
+	  commitTensor();
+	  ret = 0;
+	}
+      return(ret);
+    }
+
+    int ValueInit(_T value, cl_command_queue queue = 0)
+    {
+      int ret = -1;
+      _T *ptr = (_T *)accessTensor(CL_MAP_WRITE_INVALIDATE_REGION, queue);
+      assert(ptr);
+      if (ptr)
+	{
+	  size_t sz = getSize();
+	  for (size_t i = 0; i < sz; ++i)
+	    {
+	      ptr[i] = value;
+	    }
+	  commitTensor();
+	  ret = 0;
+	}
+      return(ret);
+    }
+
+    int initTensor(const adnn_data_init & data_init, cl_command_queue queue = 0)
+    {
+      int ret = 0;
+      switch (data_init.init_distr)
+	{
+	case ADNN_WD_GAUSSIAN:
+	  ret = GaussianInit((_T)data_init.mean, (_T)data_init.std, queue);
+	  break;
+	case ADNN_WD_CONSTANT:
+	  ret = ValueInit((_T)data_init.mean, queue);
+	  break;
+	case ADNN_WD_UNIFORM:
+	  ret = UniformInit(queue);
+	  break;
+	case ADNN_WD_CATEGORIES:
+	  ret = CategoryInit(queue);
+	  break;
+	}
+      return(ret);
+    }
+
+  protected:
+
+    CABuf<_T> * ocl_buffer_;
+    cl_command_queue prefered_queue_;
+
+  };
+};
+#endif

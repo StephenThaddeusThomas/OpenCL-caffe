@@ -1,0 +1,785 @@
+// File:AMDnn.h
+// Included by aLibDNNDriver/stdafx.h (windows)
+
+/**********************************************************************
+Copyright ?2015 Advanced Micro Devices, Inc. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+?	Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+?	Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or
+ other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+********************************************************************/
+
+
+#ifndef ADNN_LIB_H_
+#define ADNN_LIB_H_
+
+/**
+   AMDDnn library c-interface
+   defines:
+   library object
+   data object
+   node object
+   net object
+*/
+
+#define ADNN_MAX_INPUTS 8
+#define ADNN_MAX_OUTPUTS 1
+#define ADNN_MAX_TENSOR_DIM 8
+#define ADNN_MAX_FILTER_DIM 4
+
+
+/*---------------------------------------------------------
+ MD data flags
+----------------------------------------------------------*/
+#define ADNN_MEM_ALLOCSYS_ONLY  (1 << 24)
+#define ADNN_MEM_ALLOCOCL_ONLY  (1 << 25)
+
+#define ADNN_MEM_ACCESS_WRITE_DESTRUCT CL_MAP_WRITE_INVALIDATE_REGION
+#define ADNN_MEM_ACCESS_WRITE CL_MAP_WRITE
+#define ADNN_MEM_ACCESS_READ CL_MAP_READ
+
+/* library object */
+typedef void * alib_obj;
+
+/* net object */
+typedef void * anet_obj;
+
+/* node object */
+typedef void * anode_obj;
+
+/* data object */
+typedef void * adata_obj;
+
+enum {
+  ADNN_SUCCESS = 0,
+  ADNN_GENERAL_FAILURE = -1
+};
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  /*---------------------------------------------------------
+    ADNNLib lib object interface
+    ----------------------------------------------------------*/
+  /*---------------------------------------------------------
+    ADNNLib lib object parameters and interfaces.
+    ---------------------------------------------------------*/
+
+  typedef enum {
+    ADNNLIB_INSPECT_CONTEXT,		// OCL context
+    ADNNLIB_INSPECT_PARAMS,		// current parameters
+    ADNNLIB_INSPECT_DEVICES,		// accelareting devices
+    ADNNLIB_INSPECT_VERSION,		// AMDnn libray version
+    ADNNLIB_INSPECT_TOTAL
+  } ADNNLIB_INSPECT;
+
+  /*---------------------------------------------------------
+    ADNNLib object initialization parameters
+    ----------------------------------------------------------*/
+
+  typedef struct _adnn_lib_parameters
+  {
+    cl_context context;			// library's context,
+					// if 0 - the library initilizes OCL run-time, creates internal context,
+					// otherwise the library assumes an external context and does not initilize the OCL run-time.
+    cl_device_type accel_type;		// type of accelerating device - current follows OCL protocol;
+					// default: CL_DEVICE_TYPE_GPU.
+    const char * accel_platform;	// accerating platform.
+					// default: "Advanced Micro Devices, Inc."
+    const char *ocl_kernels_path;	// OCL source/binary location
+																			// default: crrent working directory
+  } adnn_lib_parameters;
+
+  /*-----------------------------------------------------------------
+    creates a new AMDnn library object,
+    that is used in creating any other objects.
+
+    if context is 0,
+       initilizes OCL run-time,
+       creates context,
+       makes a list of accelareting devices and their properties.
+    otherwise,
+       keeps the context,
+       makes a list of accelareting devices and their properties.
+
+       a user can create any number of lib objects.
+  ------------------------------------------------------------------*/
+
+  alib_obj ADNNLibCreate(const adnn_lib_parameters * lib_params);	// pointer to the parameter structure.
+									// parameters are fully copied.	
+  /*-----------------------------------------------------------------
+    destroys previously a previously created library objects
+    ------------------------------------------------------------------*/
+  int ADNNLibDestroy(alib_obj * alib);					// library object to be destroied
+
+  /*-----------------------------------------------------------------
+    returns library object name.
+    ------------------------------------------------------------------*/
+  const char *ADNNLibGetName(alib_obj lib);
+
+  /*-----------------------------------------------------------------
+    inspects AMDnn library internal state and parmeters.
+    ------------------------------------------------------------------*/
+  int ADNNLibInspect(alib_obj alib,
+		     ADNNLIB_INSPECT cause,	// reason for inspection,
+		     size_t * size,		// if data == NULL it returns the length of the inspected data, otherwise it passes the data buffer length;
+		     void * data);		// pointer to a buffer to be fiiled by the library for the inspection.
+
+  /*-----------------------------------------------------------------------------------------------------------
+    utulity that allows a user to create an OCL command queue to one of the library's device.
+
+    Note:
+    the created queue is managed by the library and will be released at the library desruction time.
+    ------------------------------------------------------------------------------------------------------------*/
+  int ADNNLibCreateDeviceQueue(alib_obj alib,	                        // library object,
+			       cl_device_id deviceId,  		        // device ID obtain with ADNNLibInspect interface,
+			       const cl_command_queue_properties *prop,	// OCL command queue prioperty
+			       cl_command_queue * new_queue);           // new cl_command_queue
+
+
+  /*---------------------------------------------------------
+    ADNNData parameters and interfaces
+
+    ADNNData object data initilizing  uiility
+    ----------------------------------------------------------*/
+
+  typedef enum {
+    ADNN_WD_NONE,				// no initialization
+    ADNN_WD_CONSTANT,				// initialize with a constant			
+    ADNN_WD_GAUSSIAN,				// initialize with a gaussain distribution
+    ADNN_WD_UNIFORM,				// initialize with a uniform distribution
+    ADNN_WD_CATEGORIES,				// initialize with random 1s in each row (for testing only)
+    ADNN_WD_TOTAL
+  } ADNN_DATA_INIT_DISTR;
+
+  typedef struct _adnn_data_init_parameters
+  {
+    ADNN_DATA_INIT_DISTR init_distr;		// distribution type
+    double mean;				// distribution mean, also serves a const value for teh CONSTANT distribution
+    double std;					// standrad deviation or sigma
+  } adnn_data_init_parameters;
+
+  /*---------------------------------------------------------
+    ADNNData object
+
+    element format
+    ----------------------------------------------------------*/
+
+  typedef enum {ADNN_DF_FP32,
+		ADNN_DF_FP64,
+		ADNN_DF_FP16,
+		ADNN_DF_UI8,
+		ADNN_DF_I8,
+		ADNN_DF_UI16,
+		ADNN_DF_I16,
+		ADNN_DF_UI32,
+		ADNN_DF_I32,
+		ADNN_DF_TOTAL
+              } ADNN_DATA_FORMAT;
+
+  /*---------------------------------------------------------
+    fixed dimension data set layout
+    N  - numbert of "batchs"
+    C  - nuber of channels (feature maps)
+    H  - height
+    W  - width
+  ----------------------------------------------------------*/
+
+  typedef enum {ADNN_BF_NCHW,
+		ADNN_BF_NHW,
+		ADNN_BF_NW,
+		ADNN_BF_HW,
+		ADNN_BF_W,
+		ADNN_BF_WHCN,
+		ADNN_BF_WHN,
+		ADNN_BF_WN,
+		ADNN_BF_WH,
+		ADNN_BF_TOTAL
+	      } ADNN_DATA_BATCH_FORMAT;
+
+  /*---------------------------------------------------------
+    ADNNData object parameters
+  ----------------------------------------------------------*/
+  
+#define ADNN_DATA_CTL_VERTIAL		1    // vertial data buffer - descriptor only
+#define ADNN_DATA_CTL_FORCELAYOUT	2    // force layout		- accept layout as it's sent, not allow opimization-related modifications
+
+  typedef struct _adnn_data_parameters
+  {
+    ADNN_DATA_FORMAT data_format;		// element format
+    ADNN_DATA_BATCH_FORMAT batch_format;	// fixed dimension data layout
+    int n_dims;					// diminsion of a arbitarry layout - less or eq ADNN_MAX_TENSOR_DIM
+    size_t dims[ADNN_MAX_TENSOR_DIM];		// dimension length
+    size_t strides[ADNN_MAX_TENSOR_DIM];	// dimension stride (in elements)
+    size_t size;				// total size in elements considering all strides
+    size_t size_bytes;				// total size in bytes considering all strides.
+    void * sys_mem;				// system pointers (when valid)
+    cl_mem ocl_mem;				// OCL buffer handle (when valid)
+    unsigned int control_bits;                  // control bits  <<<<----?? what for
+  } adnn_data_parameters;
+
+
+  /*---------------------------------------------------------
+    ADNNData interface
+
+    creates a new AMDnn Data object.
+  ----------------------------------------------------------*/
+
+  adata_obj ADNNDataCreate(alib_obj library,				// library object,
+			   const adnn_data_parameters * data_params);	// data foramat and layout descriptor
+
+  /*-------------------------------------------------------------------------
+    create a new data object with the same parameters as the original.
+    has to be allocated and destroyed independently from teh original.
+  --------------------------------------------------------------------------*/
+
+  adata_obj  ADNNDataClone(adata_obj original,	// original data object
+			   bool no_strides);	// the same data format, layout and dimensions, but not strides 
+
+  /*---------------------------------------------------------
+    destroys a Data object.
+    an object is going to be permamnetly destroyed togetherw ith underlaying memory,
+    if its reference counter == 0.
+  ----------------------------------------------------------*/
+
+  int ADNNDataDestroy(adata_obj * data);	// pointer to a previously created object. 
+
+  /*---------------------------------------------------------
+    allocates a real block of memory for the data object
+  ----------------------------------------------------------*/
+  
+  int ADNNDataAllocate(adata_obj data,	        // data object
+		       int alloc_flags);	// allocation flags, follows OCL protocol + 2 others
+
+  /*---------------------------------------------------------
+    increases a reference counter
+  ----------------------------------------------------------*/
+
+  int ADNNDataRetain(adata_obj data);		// data object
+
+  /*---------------------------------------------------------
+    decreases a reference counter
+  ----------------------------------------------------------*/
+
+  int ADNNDataRelease(adata_obj data);		// data object
+
+  /*---------------------------------------------------------
+    makes the data object accessibe by host 
+  ----------------------------------------------------------*/
+
+  int ADNNDataAccess(adata_obj data,		          // data object
+		     cl_command_queue non_default_queue,  // if set the queu has been used to transfer data from/to GPU memory, if 0, the defualt queue is going to be used
+		     int access_flags,			  // memory access flags
+		     adnn_data_parameters * data_params); // data object parameters structure with a non-NULL system pointer accesible by host and an actual memory layout.
+
+  /*---------------------------------------------------------
+    makes the data object inaccessibe by host,
+    transfers data to the accelerator memory if necessary.
+  ----------------------------------------------------------*/
+
+  int ADNNDataCommit(adata_obj data);			// data object
+
+  /*-------------------------------------------------------------------------
+    inspects the data object actual layout.
+    sytem pointer and cl_mem fields do not represent any meaningful data.
+  --------------------------------------------------------------------------*/
+
+  int ADNNDataInspect(adata_obj data,				// data object
+		      adnn_data_parameters * data_params);	// data object parameters with an actual memory layout.
+
+  /*-------------------------------------------------------------------------
+    create a new data object with the same parameters as the original.
+    has to be allocated and destroyed independently from teh original.
+  --------------------------------------------------------------------------*/
+
+  adata_obj  ADNNDataClone(adata_obj original,			// original data object
+			   bool no_strides);			// the same data format, layout and dimensions, but not strides 
+
+  /*-------------------------------------------------------------------------
+    utility function
+    intializes a data object memory according to init parameters.
+  --------------------------------------------------------------------------*/
+
+  int ADNNDataInit(adata_obj data,				    // data object
+		   const adnn_data_init_parameters * data_init);    // init parameters.
+
+  /*---------------------------------------------------------
+    ADNNode parameters and interfaces.
+    ADNNode types
+  ----------------------------------------------------------*/
+
+  typedef enum{	ADNN_NODE_GENERIC,
+		ADNN_NODE_NET,			// net
+		ADNN_NODE_FULLY_CONNECT,	// fully connected
+		ADNN_NODE_CONV,			// convoluitional
+		ADNN_NODE_CONV_LOCAL,		// local convolutional
+		ADNN_NODE_POOLING,		// pooling
+		ADNN_NODE_RESP_NORM,		// response normalization
+		ADNN_NODE_NEURON,		// neuron
+		ADNN_NODE_DROPOUT,		// dropout
+		ADNN_NODE_SOFTMAX,			// softmax
+		ADNN_NODE_SOFTMAX_COST_CROSSENTROPY,	// cost binomial cross - entropy
+		ADNN_NODE_COST_SOFTMAX,			// cost softmax
+		ADNN_NODE_COST_LOGREG,			// cost log regression
+		ADNN_NODE_ELEMSUM,
+		ADNN_NODE_ELEMMAX,
+		ADNN_LAYER_TOTAL
+              } ADNN_NODE_TYPE;
+
+  /*---------------------------------------------------------
+    control and timing
+  ----------------------------------------------------------*/
+
+  typedef struct _adnn_control_params
+              {
+		bool per_layer_timing;		// do timing per layer		
+		int  per_layer_iter;		// # of per layer iterations for timing
+		bool per_layer_messages;	// do per layer messges
+		int  debug_level;		// verification and debug control
+		void * monitor;			// real time monitor callback
+              } adnn_control_params;
+
+
+  /*---------------------------------------------------------
+    learning policy
+  ----------------------------------------------------------*/
+
+  typedef enum {ADNN_LP_FIXED,
+		ADNN_LP_LINEAR,
+		ADNN_LP_EXP_STEP,
+		ADNN_LP_EXP,
+		ADNN_LP_EXP_INV,
+		ADNN_LP_TOTAL
+	       }ADNN_LEARNINGPOLICY;
+
+  /*---------------------------------------------------------
+    learning policy arguments
+  ----------------------------------------------------------*/
+
+  typedef struct _adnn_lr_policy_params
+          {
+	    ADNN_LEARNINGPOLICY policy;
+	    double base;
+	    union {
+	      double gamma;
+	      double slope;
+	    };			/* annoymous union */
+	    union {
+	      double step;
+	      double power;
+	    };			/* annoymous union */
+	} adnn_lr_policy_params;
+
+  /*---------------------------------------------------------
+    SGD update arguments    ?? What is SGD 
+   ----------------------------------------------------------*/
+
+  typedef struct _adnn_update_params
+               {
+		 adnn_lr_policy_params weights_lr;  // weights learning policy
+		 adnn_lr_policy_params bias_lr;	    // bias learning policy
+		 double weights_momentum;		// weights momentun
+		 double bias_momentum;			// bias momentum
+		 double weights_decay;			// weights decay
+		 double bias_decay;			// bias decay
+               } adnn_update_params;
+
+  
+  /*---------------------------------------------------------
+    neuron Node types
+    ----------------------------------------------------------*/
+  typedef enum {ADNN_NEURON_PASTHRU,		//	x	
+		ADNN_NEURON_LOGISTIC,		//	Sigmoid: 1 / (1 + e^-x)
+		ADNN_NEURON_TANH,		//	a * tanh( b * x)
+		ADNN_NEURON_RELU,		//	max(0, x)
+		ADNN_NEURON_BRELU,		//	min(a, max(0, x))
+		ADNN_NEURON_SOFTRELU,	        //	bonomial normal log likelihood: log(1 + e^x)  
+		ADNN_NEURON_ABS,		//	abs(x)
+		ADNN_NEURON_SQUARE,		//	x^2
+		ADNN_NEURON_SQR,		//	sqr(x)
+		ADNN_NEURON_LINEAR,		//	ax + b
+		ADNN_NEURON_POWER,		//      (a + b * x ) ^power
+		ADNN_NEURON_TOTAL
+	      } ADNN_NEURON_TYPE;
+
+  // ?? Is a layer homogeneous - all the same types of Neurons 
+  
+  /*---------------------------------------------------------
+    neuron Node parameters
+  ----------------------------------------------------------*/
+
+  typedef struct _adnn_neuron_parameters
+              {
+		ADNN_NEURON_TYPE type;
+		double alpha;	/* what is alpha, beta, power ?? */ 
+		double beta;
+		double power;
+	      } adnn_neuron_parameters;
+
+  /*-----------------------------------------------------------
+    LRN Node parameters      ?? LRN  (Learning) 
+
+    Norm region
+  ------------------------------------------------------------*/
+
+  typedef enum {ADNN_LRN_WITHIN_CHANNEL,
+		ADNN_LRN_ACROSS_CHANNELS,
+		ADNN_LRN_TOTAL
+	       }ADNN_LRN_REGION;
+
+  typedef struct _adnn_lrn_parameters
+              {
+		ADNN_LRN_REGION region;
+		int kernel_sz;
+		double alpha;
+		double beta;
+	      } adnn_lrn_parameters;
+
+  /*---------------------------------------------------------
+    pooling method
+  ----------------------------------------------------------*/
+	typedef enum {
+		ADNN_POOLING_AVE,	// average
+		ADNN_POOLING_MAX,	// max
+		ADNN_POOLING_RAND,	// random
+		ADNN_POOLING_TOTAL
+	      } ADNN_POOLING_METHOD;
+
+  /*---------------------------------------------------------
+    1D filter parameters
+  ----------------------------------------------------------*/
+
+  typedef struct _adnn_filter1D_parameters
+               { int size;			// filter size
+		 short pad;			// padding size
+		 short stride;			// subsamplinig stride
+               } adnn_filter1D_parameters;
+
+  /*---------------------------------------------------------
+    MD filter parameters      ?? MD 
+  ----------------------------------------------------------*/
+
+  typedef struct _adnn_filter_parameters {
+		int n_dims;						// # of dimensions
+		adnn_filter1D_parameters filter[ADNN_MAX_FILTER_DIM];	// fiter parameters per dimenstion
+		bool non_sharedBiases;					// if false biases are shared
+		bool correlation;					// if flase - convolution,  if true - correlation
+  	      } adnn_filter_parameters;
+
+  /*---------------------------------------------------------
+    Node input edge type
+    ----------------------------------------------------------*/
+
+	typedef enum {
+		ADNN_ED_INTERNAL,	// internal Net edge
+		ADNN_ED_SOURCE,		// external net source edge
+		ADNN_ED_SINK,		// external net sink edge
+		ADNN_ED_TOTAL
+	} ADNN_EDGE_DIR_TYPE;
+
+  /*---------------------------------------------------------
+    Node (input or output) edge parameters
+    ----------------------------------------------------------*/
+  typedef struct _adnn_net_edge_parameters 
+              { const char * name;		// name
+		ADNN_EDGE_DIR_TYPE edge_type;	// edge type (inside Net)
+		adata_obj data;			// data
+		adata_obj data_diff;		// data diff (backpropagation)
+		// input edge only
+		adata_obj weights;		// weights data
+		adata_obj bias;			// bias data
+		adata_obj weights_diff;		// weights diff data(backpropagation)
+		adata_obj bias_diff;		// bias diff data(backpropagation)
+#if 0
+		adata_obj weights_history;	// weights history (SGD)
+		adata_obj bias_history;		// bias history (SGD)
+#endif
+		adnn_filter_parameters filter_params;	// filter parameters
+		ADNN_POOLING_METHOD pooling_method;
+		adnn_lrn_parameters lrn_parameters;
+		long long update_bits;		// bit representing structure's field
+	} adnn_net_edge_parameters;
+
+
+  /*---------------------------------------------------------
+    causes of Node inspection
+  ----------------------------------------------------------*/
+
+  typedef enum {ADNNODE_INSPECT_INPUT_EDGE,		// input edge
+		ADNNODE_INSPECT_OUTPUT_EDGE,		// output edge
+		ADNNODE_INSPECT_EXECUTION_PLAN_FWD,	// execution plan forward propagation
+		ADNNODE_INSPECT_EXECUTION_PLAN_BWD,	// execution plan backward propagation
+		ADNNODE_INSPECT_N_SLOTS,		// number of internal data slots
+		ADNNODE_INSPECT_SLOT_LIST,		// list of internal slot names, send list of char ptrs, 
+		ADNNODE_INSPECT_SLOT,			// internal data object assosiated with the slot; send ptr to the slot name, get ptr to the slot's anode_obj 
+		ADNNODE_INSPECT_TOTAL
+	      } ADNNODE_INSPECT;
+
+  /*---------------------------------------------------------
+    Node execution plan parameters
+  ----------------------------------------------------------*/
+  
+  typedef struct _adnn_node_exe_parameters 
+              { const char * kern_src_file;		// OCL source file
+		const char * kern_nm;			// OCL kernel name
+		const char * kern_src_string;		// OCL kernel source code string
+		const char * kern_build_options;	// OCL compiler build options
+		cl_kernel kernel;			// OCL kernel (when valid)
+		size_t lcl_sz[3];			// local work size
+		size_t glb_sz[3];			// global work size
+		cl_command_queue queue;			// OCL command queue
+		cl_event completion_event;		// complition event (when velid)
+		int n_weit_events;			// # of wait events
+		const cl_event *wait_events;		// array of wait events
+	} adnn_node_exe_parameters;
+
+
+
+  /*---------------------------------------------------------
+    Node parameters
+  ----------------------------------------------------------*/
+  typedef struct _adnn_node_parameters {
+                ADNN_NODE_TYPE type;					// type
+		const char * name;					// name
+		int n_input_nodes;					// number of input nodes(edges)
+		adnn_net_edge_parameters inputs[ADNN_MAX_INPUTS];	// input edges
+		int n_output_nodes;					// number of output nodes(edges)
+		adnn_net_edge_parameters outputs[ADNN_MAX_OUTPUTS];	// output edges
+		adnn_neuron_parameters neuron_params;			// neuron parameters
+		adnn_update_params update_params;			// SGD update parameters
+                adnn_control_params control;				// control and  timing
+	} adnn_node_parameters;
+
+  /*---------------------------------------------------------
+    ADNNode interface
+    
+    creates a Node of specific type.
+ --------------------------------------------------------------------------*/
+
+  anode_obj ADNNodeCreate(alib_obj library,					// library object
+			  const adnn_node_parameters * layer_params);		// node(layer) parameter structure.
+
+
+  /*-------------------------------------------------------------------------
+    destroys a previously ctreated Node. 
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeDestroy(anode_obj * alayer);					// a pointer to an exiting node.
+
+  /*-------------------------------------------------------------------------
+    updates Node's parmeters
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeUpdate(anode_obj  alayer,						// ADNNode object
+		    const adnn_node_parameters * layer_params);			// updated set of parameters.
+
+
+  /*-------------------------------------------------------------------------
+    return's Node's name
+  --------------------------------------------------------------------------*/
+
+  const char *ADNNodeGetName(anode_obj alayer);
+
+  /*-------------------------------------------------------------------------
+    defines build and run options for inference (forward propagation pass)
+    calculates memory requierments
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeConstruct(anode_obj node);	// ADNNode object
+
+
+  /*-------------------------------------------------------------------------
+    defines build and run options for inference (forward propagation pass) and training (backward pass).
+    calculates memory requierments
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeConstructTraining(anode_obj node);	// ADNNode object
+
+  /*-------------------------------------------------------------------------
+    inference (forward pass)
+    compiles execution kernels,
+    caches (passes) OCL kernel arguments,
+    creates execution plan.
+
+    Notes:
+    it's preferable but not mandotary to have memory to be allocated at this point.
+    the actual OCL memory buffers can be passed at run-time.
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeBuild(anode_obj node);			// ADNNode object
+
+  /*-------------------------------------------------------------------------
+    inference (forward pass) + training (backward pass)
+    compiles execution kernels,
+    caches (passes) OCL kernel arguments,
+    creates execution plan.
+
+    Notes:
+    it's preferable but not mandotary to have memory to be allocated at this point.
+    the actual OCL memory buffers can be passed at run-time.
+  --------------------------------------------------------------------------*/
+  
+  int ADNNodeBuildTraining(anode_obj node);		// ADNNode object
+
+
+  /*-------------------------------------------------------------------------
+    runs a single forward iteration.
+
+    Notes:
+    at this point:
+    source data has to be uploaded,
+    weights have to be initilized or uploaded.
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeRunInference(anode_obj node,		                  // ADNNode object
+			  const adnn_node_parameters * running_params);	  // node parameters structure passing run-time arguments if needed.
+
+  
+  /*-------------------------------------------------------------------------
+    runs a single backward iteration.
+
+    Notes:
+    at this point:
+    source data has to be uploaded,
+    weights have to be initilized or uploaded.
+  --------------------------------------------------------------------------*/
+
+  int ADNNodeRunTraining(anode_obj node,				// ADNNode object
+			 const adnn_node_parameters * running_params);	// node parameters structure passing run-time arguments if needed.
+
+  /*-------------------------------------------------------------------------
+    inspects node states and properties.    ?? What do we inspect for 
+    --------------------------------------------------------------------------*/
+
+  int ADNNodeInspect(anode_obj node,					// ADNNode object
+		     ADNNODE_INSPECT cause,				// cause of inspection
+		     size_t * size,					// if data == NULL it returns the length of the inspected data, otherwise it passes the data buffer length.
+		     void * data);					// pointer to a buffer to be fiiled by the library for the inspection.
+
+
+  /*---------------------------------------------------------
+    ADNN net parameters and interfaces.
+
+    ADNN net object parameters
+  ----------------------------------------------------------*/
+
+  typedef adnn_node_parameters adnn_net_parameters; /* TT: ?? can we undo this - could lead to confusion by users */
+
+  /*---------------------------------------------------------
+    ADNN net interface
+
+    creates a Net.
+
+    Note:
+    any number of Nets can be created.
+  -------------------------------------------------------------------------*/
+
+  anet_obj ADNNCreate(alib_obj library,					// library object.
+		      const adnn_net_parameters * net_params);		// net parameters structure.
+
+
+  /*-------------------------------------------------------------------------
+    destroys a previously ctreated Net.
+    Note:
+    Nodes attached to the Net are not destroyed and have to be destroyed with 
+    ADNNodeDestroy interface (see).
+  --------------------------------------------------------------------------*/
+
+  int ADNNDestroy(anet_obj * anet);					// pointer to an existing Net object.
+
+  /*-------------------------------------------------------------------------
+    returns Net's name.
+  --------------------------------------------------------------------------*/
+
+  const char *ADNNGetName(anet_obj net);				// Net object.  (void*) 
+
+  /*-------------------------------------------------------------------------
+    add an array of Nodes to the Net.
+    
+    Note:
+    Nodes have to be created with the ADNNodeCreate interface.
+    each Node input edge's name has to have a pair Node name, except for the input Node.
+    any number of arrays can be added utill the ADNNConnect call.
+    After that any ADNNodesAdd call will be ignored.
+  --------------------------------------------------------------------------*/
+
+  int ADNNodesAdd(anet_obj net,						// Net object.
+		  int n_nodes,						// number of Nodes in the array.
+		  const anode_obj * nodes);				// array of already created Nodes.
+
+  /*-------------------------------------------------------------------------
+    verifies the Net,
+    connects nodes.
+  --------------------------------------------------------------------------*/
+
+  int ADNNConnect(anet_obj net);					// Net object.
+
+  /*-------------------------------------------------------------------------
+    Construct inference only net.
+    defines build and run options for each Node,
+    creates execution plans,
+    calculates memory reqierment for each Node and total per a Net run.
+  --------------------------------------------------------------------------*/
+
+  int ADNNConstruct(anet_obj net);					// Net object.
+
+  /*-------------------------------------------------------------------------
+    Construct training net.
+    defines build and run options for each Node,
+    creates execution plans,
+    calculates memory reqierment for each Node and total per a Net run.
+  --------------------------------------------------------------------------*/
+
+  int ADNNConstructTraining(anet_obj net);				// Net object.
+
+  /*-------------------------------------------------------------------------
+    Build execution passes for inference only net
+    allocates memory for internal buffers,
+    compiles kernels,
+    finalizes execution plans per a Node,
+    considers global Net optimizations.
+  --------------------------------------------------------------------------*/
+
+  int ADNNBuild(anet_obj net);						// Net object.
+
+  /*-------------------------------------------------------------------------
+    Build execution passes for training net
+    allocates memory for internal buffers,
+    compiles kernels,
+    finalizes execution plans per a Node,
+    considers global Net optimizations.
+  --------------------------------------------------------------------------*/
+
+  int ADNNBuildTraining(anet_obj net);					// Net object.
+
+  /**-------------------------------------------------------------------------
+    runs one inference iteration,
+    accepting udates to a running parameters per each Node.
+  --------------------------------------------------------------------------*/
+
+  int ADNNRunInference(anet_obj net,					// Net object,
+		       int n_running_params,				// number updating parameter structures,
+		       const adnn_node_parameters * running_params);	// array of updating parameter structures.
+
+  /**-------------------------------------------------------------------------
+    runs one training iteration,
+    accepting udates to a running parameters per each Node.
+  --------------------------------------------------------------------------*/
+  
+  int ADNNRunTraining(anet_obj net,				        // Net object,
+		      int n_running_params,			        // number updating parameter structures,
+		      const adnn_node_parameters * running_params);     // array of updating parameter structures.
+
+#ifdef __cplusplus
+}
+#endif
+#endif

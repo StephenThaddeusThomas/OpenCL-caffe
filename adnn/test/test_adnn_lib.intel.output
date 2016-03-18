@@ -1,0 +1,68 @@
+File:test_adnn_lib.intel.output
+Date:160302
+
+This is the output from running test_adnn_lib.lnx (linux version, 64 bit) on INTEL platform
+Next step is to build on AMD platform
+
+Not sure what the kernal driver issue is - will see if I get this on AMD before investigating.
+
+command line:
+
+g++ -o test_adnn_lib.ilnx \
+-Wall \						<<<< these flags are same as used to build googletest 
+-Wshadow \
+-DGTEST_HAS_PTHREAD=1 \
+-fexceptions \
+-Wextra \
+-Wno-missing-field-initializers \
+-I/repo/google/googletest/include \
+-DUSE_GOOGLE_TEST_FIXTURE \
+test_adnn_lib.cpp \				<<<< Google Test using TEST_F (Test Fixtures)
+/c/AMD/MLopen/adnn/lib/libaDNN.a \		<<<< Alex library (build on Intel (one exists on AMD already)
+/repo/google/googletest/build/libgtest.a \	<<<< Built this morning
+/c/AMD/MLopen/appsdk/lib/x86_64/libOpenCL.so \	<<<< The AMDAPPSDK 
+-lpthread \
+/opt/clBLAS-2.3/lib64/libclBLAS.so		<<<< pulled for Junli machine, same exist on AMD host
+
+
+thaddeus@TT:/c/AMD/MLopen/adnn/test$
+
+test_adnn_lib_fixture.hpp			<<<< The Test Fixture class, encapsulate ADNN
+test_adnn_lib.cpp				<<<< The 'main' for standalone testing of Alex library
+test_adnn_main.cpp
+test_adnn_lib.ilnx				<<<< Intel version
+
+---------------------------------------- TEST RUN -----------------------------------------------------
+
+thaddeus@TT:/c/AMD/MLopen/adnn/test$ ./test_adnn_lib.lnx 
+[==========] Running 1 test from 1 test case.
+[----------] Global test environment set-up.
+[----------] 1 test from adnn_lib_test_fixture
+[ RUN      ] adnn_lib_test_fixture.unit_test
+
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Platform found : Intel
+Selected Platform Vendor : Intel
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Device 0 : Intel(R) HD Graphics Haswell GT2 Mobile Device ID is 0x7f5998057260
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+Failed to release test userptr object! (9) i915 kernel driver may not be sane!
+
+[       OK ] adnn_lib_test_fixture.unit_test (341 ms)
+[----------] 1 test from adnn_lib_test_fixture (341 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test case ran. (341 ms total)
+[  PASSED  ] 1 test.
+
+END

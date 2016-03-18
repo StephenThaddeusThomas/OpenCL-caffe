@@ -1,0 +1,126 @@
+/* File:AdnnSetupLayer.cpp
+** Path:/c/AMD/MLopen/hybrid/stage4/src/
+** Date:1603140354
+*/
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#include <CL/opencl.h>
+#include "/c/AMD/MLopen/adnn/inc/AMDnn.h"
+
+// LIBRARY GLOBALS.  Using adnn_ instead of namespace
+// These ints get set from call by AdnnConvolutionLayer::SetupLayers
+// These are the default values (from aLibADNNDriver.cpp)
+
+  int  adnn_n_categories = 100;
+  int  adnn_batch_sz = 100;
+  int  adnn_input_channels = 3;
+  int  adnn_input_w = 32;
+  int  adnn_input_h = 32;
+  int  adnn_n_output_features = 32;
+  int  adnn_filter_sz = 3;
+  int  adnn_stride = 1;
+
+// These need to be set somehow (can be set via running main4.cpp)
+  int  adnn_max_iterations = 400;
+  int  adnn_per_layer_iters = 1000;
+  bool adnn_conv_only = false;
+  bool adnn_do_training = true;
+  bool adnn_per_layer_timing = false;
+  bool adnn_net_timing = true;
+  bool adnn_verify = false;
+
+// These could be members of the AdnnConvolutionLayer
+  adnn_control_params      adnn_layer_control;
+  adnn_filter1D_parameters adnn_filter_params;
+  adnn_update_params       adnn_update_train_params;     // only need for Training
+
+// Phase1 : Setup 
+// This is called by AdnnConvolutionLayer::SetupLayer()
+
+// don't need this to be templated
+// template <typename D>
+int adnn_setup_layer(alib_obj lib_handle,
+		     int kernel_h, int kernel_w,
+		     int stride_h, int stride_w,
+		     int num, int channels,
+		     int pad_h, int pad_w,
+		     int height, int width,
+		     int num_output)
+{
+  // Step1.1: Init Variables (non-structures)
+  // Set the parameters, from values determined in AdnnConvolution::SetupLayers (adnn_conv_layer.cpp)
+  adnn_n_categories       = num_output;
+  adnn_batch_sz          = num;
+  adnn_input_channels    = channels;
+  adnn_input_w           = width;
+  adnn_input_h           = height;
+  adnn_n_output_features = num_output;
+  adnn_filter_sz         = kernel_h;	// Caffe has kernel_h and kernel_w, only using one TBD
+  adnn_stride            = stride_h;	// Caffe has stride_h and stride_w, only using h
+
+  // These stanza came from Stage3/src/AdnnConvLayer.cpp  adnn_run_conv_layer_backward()
+
+  // Step1.2: InitParmaters (structures)
+  if(adnn_verify) {  adnn_max_iterations = adnn_per_layer_iters = 1; }
+
+  memset(&adnn_layer_control, 0, sizeof(adnn_control_params));
+  adnn_layer_control.per_layer_iter      = 1;
+  adnn_layer_control.per_layer_messages  = (adnn_net_timing == false);
+  adnn_layer_control.per_layer_timing    = adnn_per_layer_timing;
+  adnn_layer_control.per_layer_iter      = adnn_per_layer_iters;
+  adnn_layer_control.debug_level         = (adnn_verify) ? 1 : 0;
+
+  adnn_filter_params.size   = adnn_filter_sz;
+  adnn_filter_params.pad    = (adnn_filter_sz-1) / 2;
+  adnn_filter_params.stride = adnn_stride;
+  
+  memset(&adnn_update_train_params, 0, sizeof(adnn_update_params));
+  adnn_update_train_params.weights_lr.policy = ADNN_LP_LINEAR;
+  adnn_update_train_params.weights_lr.base   = 0.001;
+  adnn_update_train_params.bias_lr.policy    = ADNN_LP_FIXED;
+  adnn_update_train_params.bias_lr.base      = 0.001;
+  adnn_update_train_params.weights_momentum  = 0.9;
+  adnn_update_train_params.bias_momentum     = 0;
+  adnn_update_train_params.weights_decay     = 0.004;
+
+  return(0);
+}
+
+// Data extracted from Caffe's Blobs
+
+AdnnSetupLayer.cpp:92:32: warning: variable templates only available with -std=c++14 or -std=gnu++14
+
+template<typename D> const D * bias_data;   //=(D*)0;  
+template<typename D> const D * weight_data; //=(D*)0;
+
+/* >>>>> NOT SURE <<<<< 
+template <float>  const float * bias_data;
+template <float>   const float * weight_data;
+template <double> *bias_data; template<double>*weight_data;
+template const <float>  * bias_data;
+template <float>   const float * weight_data;
+*/
+
+int bias_cnt=0;
+int weight_cnt=0;
+
+// SOMEWHERE in caffe::net we need to call this with (blobs_[1])
+
+template<typename DType> void
+adnn_init_bias(const caffe::Blob<DType>& blob)
+{
+  // The first component in a blob is the Bias
+  bias_data = blob[0]->gpu_data();
+  bias_cnt  = blob[0]->count();
+}
+
+template<typename DType> void
+adnn_init_weight(const caffe::Blob<DType>& blob)
+{
+  // The second component in a blob is the weight
+  weight_data = blob[1]->gpu_data();
+  weight_cnt  = blob[1]->count();
+}
+

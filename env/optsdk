@@ -1,0 +1,42 @@
+# File: optsdk
+# Path: /c/env
+# Host: thaddeus-nn
+# From: Env.Hybrid --> /c/env/hybrid
+# This contains paths for standard development directories (AMDAPPSDK opt-->/c/AMD
+# And for modified (forked) repositories (OpenCL-caffe-->/c/AMD/MLopen/caffe; apcLibs-->/c/AMD/MLopen/adnn)
+## from thaddeus-nn:/home/thaddeus/.bashrc
+## 160303 These must be set by sourcing one of the files in /c/env
+## /c/env/hybrid : to low level builds (test/dvlp/debug) (WD(working directory) /c/AMD/hybrid) 
+## /c/env/mlopen : for cafe build using my forks from github  (WD: /c/AMD/MLopen/caffe|adnn)
+## /c/env/native : for the unchanged code build from pulling github repo (WD: /repo/stt) 
+##export LD_LIBRARY_PATH=/c/AMD/MLopen/appsdk/lib/x86_64:/opt/clBLAS-2.3:/usr/lib32:/usr/lib
+##export CLBLAS_ROOT=/opt/clBLAS-2.3/
+##export AMDAPPSDKROOT=/opt/AMDAPPSDK-3.0
+
+## This is new location since we may make some changes to OpenCL or the contents
+AMDAPPSDKROOT=/opt/AMDAPPSDK-3.0
+
+## Not touching CLBLAS - for now
+CLBLAS_ROOT=/opt/clBLAS-2.3/
+
+## Drivers and Shared Librarys
+LIBGL_DRIVERS_PATH=/usr/lib/fglrx/dri:/usr/lib/x86_64-linux-gnu/dri:/usr/lib/dri:/usr/lib32/fglrx/dri:/usr/lib/i386-linux-gnu/dri
+
+## This differs between Hybrid and Native - Standard AMD/OpenCL/clBLAS - but NEW caffe (MLopen) 
+LD_LIBRARY_PATH=/opt/AMDAPPSDK-3.0/lib/x86_64/:/c/AMD/MLopen/caffe/build/lib:/opt/clBLAS-2.3:/usr/lib64:/usr/lib
+
+PATH=./:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CAFFE_ROOT=/c/AMD/MLopen/caffe
+CAFFE_SRC=/c/AMD/MLopen/caffe/src/caffe
+CAFFE_INC=/c/AMD/MLopen/caffe/include
+
+export CAFFE_ROOT
+export LD_LIBRARY_PATH
+export LIBGL_DRIVERS_PATH
+export CLBLAS_ROOT
+export AMDAPPSDKROOT
+
+echo "Set Environment to mix of MLopen/Caffe and Opt/SDK Opt/clBLase - DONE"
+#end
+

@@ -1,0 +1,42 @@
+# File: mlopen
+# Path: /c/env
+# Host: thaddeus-nn
+# From: Env.Hybrid --> /c/env/hybrid
+# This contains paths for standard development directories (AMDAPPSDK opt-->/c/AMD
+# And for modified (forked) repositories (OpenCL-caffe-->/c/AMD/MLopen/caffe; apcLibs-->/c/AMD/MLopen/adnn)
+# 160303
+
+## This is new location since we may make some changes to OpenCL or the contents
+AMDAPPSDKROOT=/c/AMD/AppSDK
+
+## Not touching CLBLAS - for now
+#AMD_CLBLAS_STORAGE_PATH=/home/jlgu/kdb_file/clamdblas_kdb
+#CLBLAS_STORAGE_PATH=/home/jlgu/kdb_file/clblas_kdb
+CLBLAS_ROOT=/opt/clBLAS-2.3/
+
+## From Junli environment - not sure what these are for (the AMDAPP/include)
+#CPLUS_INCLUDE_PATH=/opt/AMDAPP/include:/usr/local/cuda-6.5/include
+#C_INCLUDE_PATH=/opt/AMDAPP/include:/usr/local/cuda-6.5/include
+
+#ACML_ROOT=/opt/acml5.3.1
+#GTEST_DIR=/usr/src/gtest/
+
+## Drivers and Shared Librarys
+LIBGL_DRIVERS_PATH=/usr/lib/fglrx/dri:/usr/lib/x86_64-linux-gnu/dri:/usr/lib/dri:/usr/lib32/fglrx/dri:/usr/lib/i386-linux-gnu/dri
+LD_LIBRARY_PATH=/c/AMD/AppSDK/lib/x86_64/:/c/AMD/MLopen/caffe/build/lib:/opt/clBLAS-2.3:/usr/lib64:/usr/lib
+
+PATH=./:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CAFFE_ROOT=/c/AMD/MLopen/caffe
+CAFFE_SRC=/c/AMD/MLopen/caffe/src/caffe
+CAFFE_INC=/c/AMD/MLopen/caffe/include
+
+export CAFFE_ROOT
+export LD_LIBRARY_PATH
+export LIBGL_DRIVERS_PATH
+export CLBLAS_ROOT
+export AMDAPPSDKROOT
+
+echo "DONE"
+#end
+

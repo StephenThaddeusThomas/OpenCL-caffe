@@ -1,0 +1,9 @@
+File: README.TT
+Date: 160227
+Path: /c/AMD/MLopen/aDNN/inc    Thaddeus scratch directory (/c/AMD for refactoring) 
+===============================================================================================================
+
+This directory: /c/AMD/MLopen/aDNN/inc
+Contains the contents from
+	1. /repo/stt/apcLibs/include/common (just the files: aLibsCLUtil.h aLibsFile.hpp and aLibsUtil.hpp
+	2. AMDnn.h and AMDnn.hpp from /repo/stt/apcLibs/aDNN/aLibDNN/

@@ -1,0 +1,97 @@
+# /c/AMD/MLopen/aDNN/app/makefile.app (link to makefile for easy)
+# date: 160416
+# from: /c/dotland/src/makefile link to Makefile.dotland.lnxos (version 8)
+# gcc --version
+# gcc (Ubuntu/Linaro 4.4.4-14ubuntu5) 4.4.5
+# Linux man page for ptheads
+#   Compiling on Linux
+#       On Linux, programs that use the Pthreads API should be compiled using cc -pthread.
+############################################# Linux GCC Environment ########################################
+
+V=linux
+v=.0
+T=.lnx
+l=.plst
+H=TT
+APP=aDNNlib
+ROOT=/c/AMD
+PROJ=MLopen/aDNN
+BIN=$(ROOT)/$(PROJ)/bin/
+REMOTE_BIN_PATH = git-server:/c/bin
+LOCAL_BIN_PATH = $(ROOT)/$(PROJ)/bin
+LOCAL_LIB_PATH = $(ROOT)/$(PROJ)/lib
+LOCAL_SRC_PATH = $(ROOT)/$(PROJ)/src
+COMMON_INC_PATH= $(ROOT)/Include
+AMDSDK_INC_PATH= $(COMMON_INC_PATH)/AMDSDK
+
+########################################################################################
+# COMPILE 
+# The following is from /c/Make/makefile.notes and vlp0:/c/test/14.8/makefile.test.irxos
+########################################################################################
+
+# REMOVED -DUSE_PTHREADS (i think this was only needed for SGI)
+# -traditional-cpp was to see if we can work around <iostream> (w/o .h)
+# -frepo implies -fno-implicit-templates see ProgDvlp.110118
+# -std=c++98
+# -falt-external-templates
+# -fexternal-templates
+# -W
+# -fPIC 
+C= g++ -mglibc -pipe -pthread -c -D_REENTRANT -std=c++0x -frepo -fno-implicit-templates
+c= gcc -mglibc -pipe -c  
+
+# FLAGS
+# These compiler options are listed in three DBG levels
+# Level 1 is to get things up and running (espeically the -fpermissive) with checks that make sense when porting form AIX/IRIX to Linux
+# Level 2 is to get more strict, after we have some time to test and optimize (save space)
+# Level 3 is all warnings
+# The Flag ($F) can be concatenated.  eg F=$(C_DBG_1)$(C_DBG_2) or F=$(C_DBG_1)$(C_DBG_3) or when done, F=$(C_OPT)
+# -Wall includes many of the -w's defined so using -Wall is a bit redundant - the -W's defined above I think should be used, so  
+# -Wimplicit ==  -Wimplicit-int -Wimplicit-function-declaration
+C_DBG_0 = -w
+C_DBG_1 = -Wctor-dtor-privacy -Wnon-virtual-dtor -Wreorder -fpermissive -Wno-deprecated -Wno-non-template-friend  -Wswitch-enum -Wswitch-default -Wcast-align 
+C_DBG_2 = -Wextra -Weffc++ -Wfatal-errors -Wmissing-include-dirs  -Wundef -Wunused -Wunused-function -Wunused-label -Wunused-parameter -Wunused-macros -Wundef -Wlogical-op -Waggregate-return -Wredundant-decls -Wtraditional -Wimplicit -Wsequence-point -Wfloat-equal 
+C_DBG_3 = -Wall
+C_OPT   = -O2
+F= $(C_DBG_1) -Wno-write-strings
+E= -DLNX -DVLP -time 
+G= -DVERBOSE -fmessage-length=0 -g2 -ggdb 
+I= -I$(LOCAL_SRC_PATH) -I$(COMMON_INC_PATH)/aDNN -I$(AMDSDK_INC_PATH)
+L_OPT = -O2 -s
+L_DBG = -g 
+L= -L$(LOCAL_LIB_PATH)
+K= g++ -m64 -shared-libgcc -o
+P= -fprofile-arcs
+R= -fno-rtti
+X= -Q -H
+
+ThrdLib    =  -lpthread
+BLASLib    =  -lmil
+
+#################################### Target and Parent OBJS ########################################
+
+# Test Apps
+# First Version is for a Foward Only Single Convolutions
+app_obj  = RunSingleConvLayerInfer.cpp PrepareConvNode.cpp main.cpp
+
+app : $(app_obj)
+	$K dot $E $F $G $(app_obj) $I $L -laDNN -lm
+
+likenew     : clean fresh lib
+
+clean:
+	/bin/rm -f *.o *.rpo 
+	/bin/rm -f *~ 
+
+fresh:
+	clear; clear > /dev/pts/1
+
+run:
+	dotl.aix > /dev/pts/1
+
+runsilent:
+	dotl.aix > /dev/null
+
+# end 
+
+

@@ -1,0 +1,118 @@
+## File:CMakeLists.lib
+## Date:160219
+## Reverting back to previous what of top_down; moving all compiler settings into .top
+## Purging all things that are now in .top
+## From:cmake_files/version_2_separate for Previous 
+## From:cmake_files/version_1_top-down CMakeLists.0.TOP+CMakeLists.2.aDNN-lib
+## Date:160214
+## Whom:ThaddeusTHOMAS
+
+# ########################################################################
+# Copyright 2016 Advanced Micro Devices, Inc.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+# http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ########################################################################
+
+## TT: I think we can override these option with command line - but not sure yet how
+option(BUILD_LIB "Building MLopen aDNN Library" ON)
+
+# These CMAKE_ variables 'come with cmake' 
+option(CMAKE_VERBOSE_MAKEFILE "Enabling Verbosity for CMake/Make/Build debugging" ON)
+
+###########################################################################################################
+# File:CMakeLists.2.aLibDNN-->aDNN-lib		LIBRARY CODE BUILD 
+# Path:AMD/MLopen/cmake_files
+# Link:AMD/MLopen/aDNN/src/CMakeLists.txt    (was:/apc/aDNN/aLibDNN/)
+# Role:Library build and install 
+# Date:160210
+# From:AMD/OpenGL-caffe-stable/src/caffe/CMakeLists.txt
+# Whom:ThaddeusTHOMAS
+# Note:This has been 'gutted' but the caffe macros/methods have been commented (##) out for next version
+
+# There are a number of source files .cpp .hpp and opencl files .cl .cl.h
+# AND there is a subdirectory.
+# So, this file has to build the library and then traverse to the driver directory (aLibDNNDrive/)
+# Building the code
+# 1. have a way to build the OpenCL (see email from Alex)
+# 2. set up the list of files (opencl and c++)
+# 3. set up the compiler commands for C++ and OpenCL 
+
+add_definitions(-DCMAKE_BUILD)
+
+set(sources 	  aDNNConvLayer.cpp
+		  aDNNConvLayerWin.cpp
+		  aDNN.cpp
+		  aDNNFullyConnectLayer.cpp
+		  aDNNInternal.cpp
+		  aDNNLayer.cpp
+		  aDNNLRNLayer.cpp
+		  aDNNNeuronLayer.cpp
+		  aDNNOCL.cpp
+		  aDNNPoolingLayer.cpp
+		  aDNNSoftMaxLayer.cpp
+		  aLibDNNInternal.cpp
+		  aLibDNNObj.cpp
+		  AMDnnImpl.cpp
+		  AMDnnTensor.cpp
+		  )
+
+if(WIN32 OR MSVC_IDE)
+  list(APPEND sources stdafx.cpp)
+  ## what about targetver.h
+endif()
+
+foreach(src ${sources})
+  message("SourceFile: ${src}")
+endforeach()
+
+add_library(aDNN  STATIC ${sources})
+target_include_directories(aDNN PRIVATE ${PROJECT_INCLUDE_DIR})
+
+#add_library(clBLAS STATIC IMPORTED)
+#add_dependencies(aDNN clBLAS) 
+
+# TT: guessing the name of the library # NOTE OpenML is already used (Open Media Library) so using MLopen
+set(target_lib libaDNN.a)
+
+# OpenCL Files from OpenCL-caffe - commenting out for now
+## if(HAVE_CUDA)
+##   caffe_cuda_compile(test_cuda_objs ${test_cuda})
+##   list(APPEND test_srcs ${test_cuda_objs} ${test_cuda})
+## else()
+##   list(APPEND test_args --gtest_filter="-*GPU*")
+## endif()
+
+
+#Configure file will copy a file and do modifications to newline TT: not sure if needed
+#configure_file( "${PROJECT_INCLUDE_DIR}/????-version.h.in" "${PROJECT_BINARY_DIR}/????-version.h" )
+#Install FILES, in this case, is to copy any files that are needed by the client/application to a well-known commond location, such as /c/AMD/Include, where I'm putting all the includes from the various libraries
+#To keep from clobbering I'm creating a subdirectory under AMD/Include/MLopen and putting the files there.  See CMakeFiles.TOP for setting: PROJECT_INCLUDE_DIR, COMMON_INCLUD_DIR 
+install(FILES
+  "${PROJECT_INCLUDE_DIR}/AMDnn.h"
+  "${PROJECT_INCLUDE_DIR}/AMDnn.hpp"
+  DESTINATION
+  ${COMMON_INCLUDE_DIR}/aDNN )
+
+#Install TARGET - used to install the library built by this project.
+#Static Libraries are always treated as ARCHIVE targest
+#Modules libraries are always treated as LIBRARY targets
+#NonDLL platform shared libraries are treated as LIBRARY targets, except those market with FRAMEWORK property, which are treated as FRAMEWORK targets on OSX.
+#DLL platforms, the DLL part of a shared library is treated as a RUNTIME target, and corresponind import library is treated as an ARCHIVE target. ALL windows systems are DLL platforms
+#See https://cmake.org/cmake/help/v2.8.12/cmake.html#command:install for much more information
+#See VERSION and SOVERSION target properties for creating versioned shared libraries
+##install(TARGETS ${target_lib} 
+##  RUNTIME DESTINATION ${PROJECT_BINARY_DIR}
+##  LIBRARY DESTINATION ${PROJECT_LINKER_DIR}  # <<--- MAY NOT NEED THIS ONE
+##  ARCHIVE DESTINATION ${PROJECT_LINKER_DIR})
+# end of clSparse
+#end
