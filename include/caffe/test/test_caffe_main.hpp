@@ -1,5 +1,6 @@
 // The main caffe test code. Your test cpp code should include this hpp
 // to allow a main function to be compiled into the binary.
+
 #ifndef CAFFE_TEST_TEST_CAFFE_MAIN_HPP_
 #define CAFFE_TEST_TEST_CAFFE_MAIN_HPP_
 
@@ -25,47 +26,49 @@ using std::endl;
 
 int main(int argc, char** argv);
 
-namespace caffe {
+namespace caffe
+{
 
-template <typename TypeParam>
-class MultiDeviceTest: public ::testing::Test {
+  template <typename TypeParam>
+  class MultiDeviceTest: public ::testing::Test
+  {
   public:
     typedef typename TypeParam::Dtype Dtype;
   protected:
-    MultiDeviceTest() {
+    MultiDeviceTest()
+    {
       Caffe::set_mode(TypeParam::device);
     }
-    virtual ~MultiDeviceTest() {
-    }
-};
+    virtual ~MultiDeviceTest() {  }
+  };
 
-typedef ::testing::Types<float, double> TestDtypes;
+  typedef ::testing::Types<float, double> TestDtypes;
 
-template <typename TypeParam>
-struct CPUDevice {
+  template <typename TypeParam>
+  struct CPUDevice
+  {
     typedef TypeParam Dtype;
     static const Caffe::Brew device = Caffe::CPU;
-};
+  };
 
-template <typename Dtype>
-class CPUDeviceTest: public MultiDeviceTest<CPUDevice<Dtype> > {
-};
+  template <typename Dtype>
+  class CPUDeviceTest: public MultiDeviceTest<CPUDevice<Dtype> > { };
 
 #ifdef CPU_ONLY
-
-typedef ::testing::Types<CPUDevice<float>,
-CPUDevice<double> > TestDtypesAndDevices;
+  
+  typedef ::testing::Types<CPUDevice<float>, CPUDevice<double> > TestDtypesAndDevices;
 
 #else
 
-template <typename TypeParam>
-struct GPUDevice {
+  template <typename TypeParam>
+  struct GPUDevice
+  {
     typedef TypeParam Dtype;
     static const Caffe::Brew device = Caffe::GPU;
-};
+  };
 
-template <typename Dtype>
-class GPUDeviceTest: public MultiDeviceTest<GPUDevice<Dtype> > {
+  template <typename Dtype>
+  class GPUDeviceTest: public MultiDeviceTest<GPUDevice<Dtype> > {
 };
 
 typedef ::testing::Types<CPUDevice<float>, CPUDevice<double>, GPUDevice<float>,

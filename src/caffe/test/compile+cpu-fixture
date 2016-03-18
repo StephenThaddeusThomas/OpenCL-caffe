@@ -1,0 +1,51 @@
+#!/bin/bash
+#Test #1 in test_caffe_adnn.sh
+#This does not link no 'main'!   [ but 160307 - added back in -isystem calles ]
+echo "Build Caffe+Adnn Lib Test using GPU and Standard Test"
+g++ -o test_caffe_adnn+cpu-fix.alnx -Wall -Wshadow \
+-DGTEST_HAS_PTHREAD=1 -fexceptions -Wextra -Wno-missing-field-initializers \
+-fPIC -Wall -Wno-sign-compare -Wno-uninitialized \
+-O3 \
+-DNDEBUG \
+-fPIC \
+-isystem /usr/local/include \
+-isystem /repo/stt/OpenCL-caffe/build/external/gflags-install/include \
+-isystem /repo/stt/OpenCL-caffe/build/include \
+-isystem /usr/include/hdf5/serial \
+-isystem /opt/AMDAPPSDK-3.0/include \
+-isystem /opt/clBLAS-2.3/include \
+-isystem /usr/include/opencv \
+-isystem /usr/include/atlas \
+-I/repo/stt/OpenCL-caffe/src \
+-I/repo/stt/OpenCL-caffe/include \
+-I/repo/stt/OpenCL-caffe/build \
+-I/c/AMD/MLopen/caffe/include \
+-I/repo/google/googletest/include \
+-I/usr/include/hdf5/serial \
+-I/repo/stt/OpenCL-caffe/build/external/gflags-install/include \
+-I/c/AMD/MLopen/caffe/build/include\
+test_caffe_adnn_lib.cpp \
+/c/AMD/MLopen/hybrid/libcaffe.so \
+/c/AMD/MLopen/adnn/lib/libaDNN.a \
+/c/AMD/MLopen/hybrid/libgtest.a \
+/c/AMD/MLopen/hybrid/libgflags.a \
+/c/AMD/MLopen/hybrid/libproto.a \
+-lpthread \
+-lprotobuf \
+-lz -ldl -lm -llmdb -lleveldb -lsnappy \
+/usr/local/lib/libglog.a \
+/repo/google/googletest/build/libgtest.a \
+/usr/lib/x86_64-linux-gnu/hdf5/serial/lib/libhdf5_hl.so \
+/usr/lib/x86_64-linux-gnu/hdf5/serial/lib/libhdf5.so \
+/opt/AMDAPPSDK-3.0/lib/x86_64/libOpenCL.so \
+/opt/clBLAS-2.3/lib64/libclBLAS.so \
+/usr/lib/x86_64-linux-gnu/libopencv_highgui.so.2.4.9 \
+/usr/lib/x86_64-linux-gnu/libopencv_imgproc.so.2.4.9 \
+/usr/lib/x86_64-linux-gnu/libopencv_core.so.2.4.9 \
+/opt/clBLAS-2.3/lib64/libclBLAS.so \
+-llapack_atlas \
+-lcblas \
+-latlas \
+/opt/clBLAS-2.3/lib64/libclBLAS.so \
+-lboost_system \
+-lboost_thread 

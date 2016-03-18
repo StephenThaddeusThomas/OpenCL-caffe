@@ -43,18 +43,6 @@ find_package(Snappy REQUIRED)
 include_directories(SYSTEM ${Snappy_INCLUDE_DIR})
 list(APPEND Caffe_LINKER_LIBS ${Snappy_LIBRARIES})
 
-# ---[ CUDA
-#include(cmake/Cuda.cmake)
-#if(NOT HAVE_CUDA)
-#  if(CPU_ONLY)
-#    message("-- CUDA is disabled. Building without it...")
-#  else()
-#    message("-- CUDA is not detected by cmake. Building without it...")
-#  endif()
-
-  # TODO: remove this not cross platform define in future. Use caffe_config.h instead.
-#  add_definitions(-DCPU_ONLY)
-#endif()
 
 # ---[ OpenCL
 find_package(OpenCL REQUIRED)
@@ -76,29 +64,38 @@ list(APPEND Caffe_LINKER_LIBS ${OpenCV_LIBS})
 message(STATUS "OpenCV found (${OpenCV_CONFIG_PATH})")
 
 # ---[ BLAS
-if(NOT APPLE)
-  set(BLAS "Atlas" CACHE STRING "Selected BLAS library")
-  set_property(CACHE BLAS PROPERTY STRINGS "Atlas;Open;MKL")
+## I have clBLAS - not sure how to configure it (for CMake) so commenting this out
+##if(NOT APPLE)
+##  set(BLAS "Atlas" CACHE STRING "Selected BLAS library")
+##  set_property(CACHE BLAS PROPERTY STRINGS "Atlas;Open;MKL")
 
-  if(BLAS STREQUAL "Atlas" OR BLAS STREQUAL "atlas")
+##  if(BLAS STREQUAL "Atlas" OR BLAS STREQUAL "atlas")
     find_package(Atlas REQUIRED)
     include_directories(SYSTEM ${Atlas_INCLUDE_DIR})
     list(APPEND Caffe_LINKER_LIBS ${Atlas_LIBRARIES})
-  elseif(BLAS STREQUAL "Open" OR BLAS STREQUAL "open")
-    find_package(OpenBLAS REQUIRED)
-    include_directories(SYSTEM ${OpenBLAS_INCLUDE_DIR})
-    list(APPEND Caffe_LINKER_LIBS ${OpenBLAS_LIB})
-  elseif(BLAS STREQUAL "MKL" OR BLAS STREQUAL "mkl")
-    find_package(MKL REQUIRED)
-    include_directories(SYSTEM ${MKL_INCLUDE_DIR})
-    list(APPEND Caffe_LINKER_LIBS ${MKL_LIBRARIES})
-    add_definitions(-DUSE_MKL)
-  endif()
-elseif(APPLE)
-  find_package(vecLib REQUIRED)
-  include_directories(SYSTEM ${vecLib_INCLUDE_DIR})
-  list(APPEND Caffe_LINKER_LIBS ${vecLib_LINKER_LIBS})
-endif()
+##  elseif(BLAS STREQUAL "Open" OR BLAS STREQUAL "open")
+##    find_package(OpenBLAS REQUIRED)
+##    include_directories(SYSTEM ${OpenBLAS_INCLUDE_DIR})
+##    list(APPEND Caffe_LINKER_LIBS ${OpenBLAS_LIB})
+##  elseif(BLAS STREQUAL "MKL" OR BLAS STREQUAL "mkl")
+##    find_package(MKL REQUIRED)
+##    include_directories(SYSTEM ${MKL_INCLUDE_DIR})
+##    list(APPEND Caffe_LINKER_LIBS ${MKL_LIBRARIES})
+##    add_definitions(-DUSE_MKL)
+##  endif()
+##elseif(APPLE)
+##  find_package(vecLib REQUIRED)
+##  include_directories(SYSTEM ${vecLib_INCLUDE_DIR})
+##  list(APPEND Caffe_LINKER_LIBS ${vecLib_LINKER_LIBS})
+##endif()
+## TT: patch
+# 2 -- [ clBLAS - vector math library ] --
+# aDNN requires clBLAS library
+# from my cmake.app, but added next line to confirm to above
+find_package(clBLAS REQUIRED)
+include_directories(SYSTEM ${CLBLAS_INCLUDE_DIRS})
+add_library(clBLAS STATIC IMPORTED GLOBAL )   
+list(APPEND Caffe_LINKER_LIBS ${CLBLAS_LIBRARIES})
 
 # ---[ Python
 if(BUILD_python)

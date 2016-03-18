@@ -1804,6 +1804,7 @@ bool UnitTestOptions::FilterMatchesTest(const String &test_case_name,
           !MatchesFilter(full_name, negative.c_str()));
 }
 
+  // Structured Exception Handling
 #if GTEST_HAS_SEH
 // Returns EXCEPTION_EXECUTE_HANDLER if Google Test should handle the
 // given SEH exception, or EXCEPTION_CONTINUE_SEARCH otherwise.

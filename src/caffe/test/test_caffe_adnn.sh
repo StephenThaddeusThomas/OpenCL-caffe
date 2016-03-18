@@ -1,0 +1,13 @@
+#!/bin/bash
+echo 1
+echo "----------[ CPU ONLY - No Fixture ]-----------"
+compile+cpu-fixture && test_caff_adnn+cpu-fix.alnx
+echo 2   
+echo "----------[ CPU ONLY - Fixture ]--------------"
+compile+cpu+fixture && test_caffe_adnn+cpu+fix.alnx
+echo 3   
+echo "----------[ GPU - No Fixture ]----------------"
+compile-cpu-fixture && test_caffe_adnn-cpu-fix.alnx
+echo 4   
+echo "--------- [ GPU - Fixture ]-------------------"
+compile-cpu+fixture && test_caffe_adnn-cpu+fix.alnx 

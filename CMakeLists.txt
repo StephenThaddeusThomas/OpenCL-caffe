@@ -7,9 +7,9 @@ project(Caffe C CXX)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
 
 # TT:160225 linking in MLopen 
-message(STATUS "Pulling in apcLibs as MLopen") 
-add_subdirectory(/repo/stt/apcLibs /repo/stt/MLopen)
-message(STATUS "Done MLopen")
+##message(STATUS "Pulling in apcLibs as MLopen") 
+##add_subdirectory(/repo/stt/apcLibs /repo/stt/MLopen)
+##message(STATUS "Done MLopen")
 
 include(ExternalProject)
 
@@ -60,8 +60,8 @@ add_subdirectory(src/gtest)
 add_subdirectory(src/caffe)
 add_subdirectory(tools)
 add_subdirectory(examples)
-add_subdirectory(python)
-add_subdirectory(matlab)
+##add_subdirectory(python)
+##add_subdirectory(matlab)
 add_subdirectory(docs)
 
 # ---[ Linter target

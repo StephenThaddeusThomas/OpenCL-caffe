@@ -150,7 +150,7 @@
 //   GTEST_HAS_PTHREAD        - Define it to 1/0 to indicate that <pthread.h>
 //                              is/isn't available.
 //   GTEST_HAS_RTTI           - Define it to 1/0 to indicate that RTTI is/isn't
-//                              enabled.
+//                              enabled.  (RunTimeTypeInformation)
 //   GTEST_HAS_STD_WSTRING    - Define it to 1/0 to indicate that
 //                              std::wstring does/doesn't work (Google Test can
 //                              be used where std::wstring is unavailable).
@@ -179,6 +179,7 @@
 //
 // Macros indicating the current platform (defined to 1 if compiled on
 // the given platform; otherwise undefined):
+// TT: can more than one be set at a time
 //   GTEST_OS_AIX      - IBM AIX
 //   GTEST_OS_CYGWIN   - Cygwin
 //   GTEST_OS_HPUX     - HP-UX

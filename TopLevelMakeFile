@@ -1,0 +1,111 @@
+Script started on Sat 27 Feb 2016 01:26:04 PM PST
+]0;root@thaddeus-nn: /repo/stt/OpenCL-cafferoot@thaddeus-nn:/repo/stt/OpenCL-caffe# make 
+PROTOC src/caffe/proto/caffe.proto
+CXX .build_debug/src/caffe/proto/caffe.pb.cc
+CXX src/caffe/layers/dummy_data_layer.cpp
+In file included from ./include/caffe/blob.hpp:8:0,
+                 from ./include/caffe/filler.hpp:10,
+                 from src/caffe/layers/dummy_data_layer.cpp:3:
+./include/caffe/common.hpp:5:27: fatal error: gflags/gflags.h: No such file or directory
+compilation terminated.
+Makefile:506: recipe for target '.build_debug/src/caffe/layers/dummy_data_layer.o' failed
+make: *** [.build_debug/src/caffe/layers/dummy_data_layer.o] Error 1
+]0;root@thaddeus-nn: /repo/stt/OpenCL-cafferoot@thaddeus-nn:/repo/stt/OpenCL-caffe# ck[K[Kclear; ls /opt
+[3;J[H[2J[0m[01;34mAMDAPPSDK-3.0[0m  [01;34mclAmdBlas-1.10.321[0m  [01;34mclBLAS-2.3[0m  [34;42mclBLAS-master[0m  [01;34mglog[0m
+]0;root@thaddeus-nn: /repo/stt/OpenCL-cafferoot@thaddeus-nn:/repo/stt/OpenCL-caffe# cd /opt/clBLAS-2.3/
+]0;root@thaddeus-nn: /opt/clBLAS-2.3root@thaddeus-nn:/opt/clBLAS-2.3# ls
+[0m[01;34mbin[0m  [01;34minclude[0m  [01;34mlib64[0m
+]0;root@thaddeus-nn: /opt/clBLAS-2.3root@thaddeus-nn:/opt/clBLAS-2.3# ls lib64
+libclBLAS.so  libclBLAS.so.2  libclBLAS.so.2.3.0  [0m[01;34mpkgconfig[0m  [01;34msrc[0m
+]0;root@thaddeus-nn: /opt/clBLAS-2.3root@thaddeus-nn:/opt/clBLAS-2.3# cd /[K-
+/repo/stt/OpenCL-caffe
+]0;root@thaddeus-nn: /repo/stt/OpenCL-cafferoot@thaddeus-nn:/repo/stt/OpenCL-caffe# cd build
+]0;root@thaddeus-nn: /repo/stt/OpenCL-caffe/buildroot@thaddeus-nn:/repo/stt/OpenCL-caffe/build# cmake ..
+-- Boost version: 1.58.0
+-- Found the following Boost libraries:
+--   system
+--   thread
+-- Could NOT find GFlags (missing:  GFLAGS_INCLUDE_DIR GFLAGS_LIBRARY) 
+-- Found glog    (include: /usr/local/include, library: /usr/local/lib/libglog.so)
+-- Found PROTOBUF Compiler: /usr/bin/protoc
+-- Found lmdb    (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/liblmdb.so)
+-- Found LevelDB (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/libleveldb.so)
+-- Found Snappy  (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/libsnappy.so)
+-- Found OpenCL  (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/libOpenCL.so)
+-- Found clBLAS  (include: /usr/include, library: /opt/clBLAS-2.3/lib64/libclBLAS.so)
+-- OpenCV found (/usr/share/OpenCV)
+CMake Error at /usr/share/cmake-3.2/Modules/FindPackageHandleStandardArgs.cmake:138 (message):
+  Could NOT find Atlas (missing: Atlas_CBLAS_LIBRARY Atlas_BLAS_LIBRARY
+  Atlas_LAPACK_LIBRARY)
+Call Stack (most recent call first):
+  /usr/share/cmake-3.2/Modules/FindPackageHandleStandardArgs.cmake:374 (_FPHSA_FAILURE_MESSAGE)
+  cmake/Modules/FindAtlas.cmake:43 (find_package_handle_standard_args)
+  cmake/Dependencies.cmake:73 (find_package)
+  CMakeLists.txt:33 (include)
+
+
+-- Configuring incomplete, errors occurred!
+See also "/repo/stt/OpenCL-caffe/build/CMakeFiles/CMakeOutput.log".
+See also "/repo/stt/OpenCL-caffe/build/CMakeFiles/CMakeError.log".
+]0;root@thaddeus-nn: /repo/stt/OpenCL-caffe/buildroot@thaddeus-nn:/repo/stt/OpenCL-caffe/build# make all
+-- Boost version: 1.58.0
+-- Found the following Boost libraries:
+--   system
+--   thread
+-- Could NOT find GFlags (missing:  GFLAGS_INCLUDE_DIR GFLAGS_LIBRARY) 
+-- Found glog    (include: /usr/local/include, library: /usr/local/lib/libglog.so)
+-- Found PROTOBUF Compiler: /usr/bin/protoc
+-- Found lmdb    (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/liblmdb.so)
+-- Found LevelDB (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/libleveldb.so)
+-- Found Snappy  (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/libsnappy.so)
+-- Found OpenCL  (include: /usr/include, library: /usr/lib/x86_64-linux-gnu/libOpenCL.so)
+-- Found clBLAS  (include: /usr/include, library: /opt/clBLAS-2.3/lib64/libclBLAS.so)
+-- OpenCV found (/usr/share/OpenCV)
+CMake Error at /usr/share/cmake-3.2/Modules/FindPackageHandleStandardArgs.cmake:138 (message):
+  Could NOT find Atlas (missing: Atlas_CBLAS_LIBRARY Atlas_BLAS_LIBRARY
+  Atlas_LAPACK_LIBRARY)
+Call Stack (most recent call first):
+  /usr/share/cmake-3.2/Modules/FindPackageHandleStandardArgs.cmake:374 (_FPHSA_FAILURE_MESSAGE)
+  cmake/Modules/FindAtlas.cmake:43 (find_package_handle_standard_args)
+  cmake/Dependencies.cmake:73 (find_package)
+  CMakeLists.txt:33 (include)
+
+
+-- Configuring incomplete, errors occurred!
+See also "/repo/stt/OpenCL-caffe/build/CMakeFiles/CMakeOutput.log".
+See also "/repo/stt/OpenCL-caffe/build/CMakeFiles/CMakeError.log".
+Makefile:573: recipe for target 'cmake_check_build_system' failed
+make: *** [cmake_check_build_system] Error 1
+]0;root@thaddeus-nn: /repo/stt/OpenCL-caffe/buildroot@thaddeus-nn:/repo/stt/OpenCL-caffe/build# apt-get install libatlas-base-dev
+Reading package lists... 0%Reading package lists... 100%Reading package lists... Done
+Building dependency tree... 0%Building dependency tree... 0%Building dependency tree... 50%Building dependency tree... 50%Building dependency tree       
+Reading state information... 0%Reading state information... 0%Reading state information... Done
+The following extra packages will be installed:
+  libatlas3-base
+Suggested packages:
+  libblas-doc liblapack-doc liblapack3
+The following NEW packages will be installed:
+  libatlas-base-dev libatlas3-base
+0 upgraded, 2 newly installed, 0 to remove and 16 not upgraded.
+Need to get 6,005 kB of archives.
+After this operation, 42.6 MB of additional disk space will be used.
+Do you want to continue? [Y/n] 
+0% [Working]            Get:1 http://us.archive.ubuntu.com/ubuntu/ wily/universe libatlas3-base amd64 3.10.2-7 [2,668 kB]
+            0% [1 libatlas3-base 1,194 B/2,668 kB 0%]                                         22% [1 libatlas3-base 1,351 kB/2,668 kB 51%]                                            44% [Waiting for headers]                         Get:2 http://us.archive.ubuntu.com/ubuntu/ wily/universe libatlas-base-dev amd64 3.10.2-7 [3,338 kB]
+                         44% [2 libatlas-base-dev 2,642 B/3,338 kB 0%]                                             79% [2 libatlas-base-dev 2,076 kB/3,338 kB 62%]                                               100% [Working]              Fetched 6,005 kB in 1s (3,455 kB/s)
+Selecting previously unselected package libatlas3-base.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 227708 files and directories currently installed.)
+Preparing to unpack .../libatlas3-base_3.10.2-7_amd64.deb ...
+Unpacking libatlas3-base (3.10.2-7) ...
+Selecting previously unselected package libatlas-base-dev.
+Preparing to unpack .../libatlas-base-dev_3.10.2-7_amd64.deb ...
+Unpacking libatlas-base-dev (3.10.2-7) ...
+Setting up libatlas3-base (3.10.2-7) ...
+Setting up libatlas-base-dev (3.10.2-7) ...
+Processing triggers for libc-bin (2.21-0ubuntu4.1) ...
+]0;root@thaddeus-nn: /repo/stt/OpenCL-caffe/buildroot@thaddeus-nn:/repo/stt/OpenCL-caffe/build# cd ..
+]0;root@thaddeus-nn: /repo/stt/OpenCL-cafferoot@thaddeus-nn:/repo/stt/OpenCL-caffe# rm -r build
+]0;root@thaddeus-nn: /repo/stt/OpenCL-cafferoot@thaddeus-nn:/repo/stt/OpenCL-caffe# exit
+exit
+
+Script done on Sat 27 Feb 2016 06:26:32 PM PST

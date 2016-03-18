@@ -1,3 +1,10 @@
+// file:base_conv_layer.cpp
+// root:/repo/stt/OpenCL-caffe --> work: /c/AMD/MLopen/caffe/
+// path:src/caffe/layers/base_conv_layer.cpp
+// host:thaddeus-nn  (Ubuntu 15.10 with Fury X R9 AMD GPU)
+// date:160315 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #include <vector>
 
 #include "caffe/filler.hpp"
@@ -7,6 +14,16 @@
 #include "caffe/vision_layers.hpp"
 #include "caffe/common.hpp"
 
+/* Stage:4.8 This moved to conv_layer.cpp
+extern alib_obj caffe::adnn_lib_object;
+extern int adnn_setup_layer(alib_obj lib_handle,
+			    int kernel_h, int kernel_w,
+			    int stride_h, int stride_w,
+			    int num, int channels,
+			    int pad_h, int pad_w,
+			    int height, int width,
+			    int num_output);
+*/
 namespace caffe {
 
 #ifndef CPU_ONLY
@@ -139,6 +156,9 @@ void BaseConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
             GetFiller < Dtype
                 > (this->layer_param_.convolution_param().weight_filler()));
     weight_filler->Fill(this->blobs_[0].get());
+
+    // Stage4 : Good place to call adnn_init_weight(blobs_[0]);
+    
     // If necessary, initialize and fill the biases.
     if (bias_term_) {
       vector<int> bias_shape(1, num_output_);
@@ -150,6 +170,16 @@ void BaseConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom,
       bias_filler->Fill(this->blobs_[1].get());
     }
   }
+
+  // Stage4: Good place to call adnn_init_bias(blobs_[1]);
+
+  // Stage4: Setup the Layer in the ADNN Framework. It will use these to PrepareConvNode
+  /* BAD PLACE FOR THIS - moving into newly created ConvlutionLayer::SetupLayer
+  int rc=adnn_setup_layer(caffe::adnn_lib_object, kernel_h_, kernel_w_,
+			  stride_h_, stride_w_, num_, channels_,
+			  pad_h_, pad_w_, height_, width_, num_output_);
+  */
+
   // Propagate gradients to the parameters (as directed by backward pass).
   this->param_propagate_down_.resize(this->blobs_.size(), true);
 }
