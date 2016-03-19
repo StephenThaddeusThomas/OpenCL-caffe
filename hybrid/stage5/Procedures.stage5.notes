@@ -1,0 +1,94 @@
+#File:Procedures.stage5.notes
+#Path:/c/AMD/MLopen/hybrid/stage4  and link to AMD/notes
+#Date:160418
+#Host:thaddeus-nn
+#From:Procedures.stage4.notes    <-- historical reference
+#Proj:/c/AMD/MLopen/caffe/       <-- my working directory where all the caffe changes are to integrate ADNN 
+#Repo:/repo/stt/OpenCL-caffe/    <-- the 'branch'  --> /c/AMD/MLopen/caffe
+#Repo:/repo/junli/OpenCL-caffe/  <-- the 'master'  not touched, used for file comparisons and local copy of master'
+#Repo:/repo/stt/OpenCL-caffe/hybrid <-- 'workspace' --> /c/AMD/hybrid
+#Repo:/repo/stt/OpenCL-caffe/env  <--- environment  --> /c/env
+#Note:ConvParamMapping.notes      <--- defines where caffe parameters get mapped into ADNN
+
+# NOTE: Stage5 is ONLY for INFERENCE - that is forward convolution
+
+# NOTE: all files in work relative to /c/AMD/MLopen so the after checking them out you need to rename the paths
+# or copy them to the work directory.  I know this probably isn't how it should be done.  I'm a bit new to GitHub
+# and this was a way for me to make sure I didn't accidentally blow away my files with a mistaken git command.
+
+# repository https://github.com/StephenThaddeusThomas/OpenCL-caffe.git
+
+mkdir <repo/path>
+git clone https://github.com/StephenThaddeusThomas/OpenCL-caffe.git
+
+mkdir -P /c/AMD/MLopen/hybrid
+mkdir -P /c/AMD/MLopen/caffe
+mkdir -P /c/AMD/MLopen/adnn
+mv -rp <repo/path>/OpenCL-caffe/hybrid/* /c/AMD/MLopen/hybrid
+mv -rp <repo/path>/OpenCL-caffe/*      	 /c/AMD/MLopen/caffe
+mv -rp <repo/path>/OpenCL-caffe/adnn/* 	 /c/AMD/MLopen/adnn
+
+# Please see Directory.notes for information about the directorys and file names
+
+#PROCEDURES TO BUILD Caffe and the libraries - WITHOUT CMAKE (its not working)
+
+# I find it simple to have two terminal windows.  1: CAFFE  2:HYBRID
+
+#  ------------------------------------------------------ Building CAFFE ----------------------------------------------------------
+
+cd to /c/AMD/MLopen/caffe
+
+#if there is a build director, see if its for CMake or for other purpose
+#If it was there when initially checked out from GitHub then it probably
+#has another purpose.  In which case subsequenct reference to the 'build'
+#directory should be replaced with something like ProjectBuild or CmakeBuild
+
+#So, if the build/ is purely for CMake then cd into it, run 'make clean'
+#then, simple cd back out (cd ..) ; delete the build directory (rm -f build);
+#recreate the directory (mkdir build) ; change into it (cd build) and run cmake again ( cmake .. ).
+#This should create a whole file tree below, including a tree similar to that found in caffe/src/
+
+#SO from the top (assuming build is not there) and you are in the caffe (repo/*/OpenCL-caffe or /c/AMD/MLopen/caffe)
+
+mkdir build
+cd build
+cmake ..
+make
+
+# to run caffe you need a log directory under caffe/  (or OpenCL-caffe)
+cd ..   # back up to /c/AMD/MLopen/caffe or /repo/stt/OpenCL-caffe
+mkdir log
+
+# the test I have been using are in examples/cifar10
+# but you need to run a few scripts to 1. download the database (will take some time) and 2. generate the mean
+# see http://caffe.berkeleyvision.org/gathered/examples/cifar10.html
+# from /c/AMD/MLopen/caffe
+./data/cifar10/get_cifar10.sh
+./examples/cifar10/create_cifar10.sh
+
+# now you should be able to run the Quick Train
+./examples/cifar10/train_quick.sh
+
+#================================================================================================================================
+# REVISED 
+#					Building Hybrid Caffe.so  (aka libcaffe+stage5.so)
+
+cd /c/AMD/MLopen/caffe
+rm -rf build
+mkdir build; cd build; cmake .. ;
+make					# this make will fail cause it doesn't have libaDNN.a (a problem I am having CMake )
+					# BUT we don't need caffe to be linked just yet, we just need caffe.cpp.o (build/src/.../caffe.bin.dir)
+					# and libcaffe.so (build/lib)
+					
+# NOW we have the building blocks and can build using the Hybrid Makefiles
+cd /c/AMD/MLopen/hybrid/stage5/src
+make libinfer
+make infer
+make install_infer
+
+# NOW you can go to the testing location and run the CIFAR example
+cd /c/AMD/MLopen/caffe
+./examples/cifar10/train_quick.sh
+
+thaddeus@thaddeus-nn:/c/AMD/MLopen/caffe$ ./examples/cifar10/train_quick.sh > /c/Stage5.out 
+

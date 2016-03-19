@@ -1,3 +1,4 @@
+// Modified for Stage5 
 // This is the mutilated file for testing Stage3 and Stage4
 // See /c/AMD/MLopen/hybrid/starg4/caffe-conv_layer.cpp.notes for questions 
 // Stage4 changed - not passing vector<Blob> just single blobs
@@ -23,11 +24,10 @@ extern    alib_obj caffe::adnn_lib_object;
 // Stage3 : template <typename T> int adnn_run_conv_layer(alib_obj lib_handle, const std::vector<caffe::Blob<T>*>&src, const std::vector<caffe::Blob<T>*>&des);
 // TT:1603160351 Stage4  this usis a single blob.  The 'bridge' will call the appropriate methods
 
-//template<typename T> int adnn_run_conv_layer(alib_obj lib_handle, const caffe::Blob<T>*src, const caffe::Blob<T>*des);
-template<typename T> void adnn_init_bias( boost::shared_ptr< caffe::Blob<T> >& blob);
-template<typename T> void adnn_init_weight( boost::shared_ptr< caffe::Blob<T> >& blob);
-template<typename T> int adnn_init_layer_infer(alib_obj lib_handle, const caffe::Blob<T> *src_blob, caffe::Blob<T> *des_blob);
-extern int adnn_run_forward();
+extern void adnn_init_weight(int chan, int height, int width) ;
+extern void adnn_init_bias(int chan, int height, int width);
+extern int  adnn_init_layer_infer(alib_obj lib_handle);
+template<typename T> int  adnn_run_forward(const caffe::Blob<T> *src_blob, caffe::Blob<T> *des_blob);
 extern int adnn_run_backward();
 template <typename T> int adnn_term_layer(alib_obj lib_handle,caffe::Blob<T> *top_blob);
 
@@ -84,10 +84,18 @@ void ConvolutionLayer<Dtype>::LayerSetUp(const vector<Blob<Dtype>*>& bottom, con
 	      << "\n\t kernel_dim_           :" << this->kernel_dim_
 	      << std::endl;
 
-  // Use the values calculated in the Base LayerSetup to configure ADNN Node
+  // Stage4: Use the values calculated in the Base LayerSetup to configure ADNN Node
+  // NOTE: that adnn_setup_layer may be ignoring num_ 
   int rc=adnn_setup_layer(caffe::adnn_lib_object, this->kernel_h_, this->kernel_w_,
 			  this->stride_h_, this->stride_w_, this->num_, this->channels_,
 			  this->pad_h_, this->pad_w_, this->height_, this->width_, this->num_output_);
+
+  // new Stage5: with insight from ALEX, see ConvParamMapping.notes 160318
+  adnn_init_bias(1,  this->height_out_,  this->width_out_);
+  adnn_init_weight(this->conv_in_channels_, this->kernel_h_, this->kernel_w_);
+
+  // new Stage5: this was called in Forward_gpu  (V3) also not sending any blobs 
+  rc=adnn_init_layer_infer(adnn_lib_object);  
   std::cout << "RC:"<< rc << std::endl;
 }
   
@@ -176,19 +184,17 @@ void ConvolutionLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom, co
   // Going to test a couple of versions
   // V1: commenting out the INNER items
   // V2: comment out the OUTER items
+  // V3: see SetupLayer()
   
   int n,rc=0,max=bottom.size();
-  adnn_init_bias(this->blobs_[1]);     // << These aren't the same
-  adnn_init_weight(this->blobs_[0]);   // << 
-  //V2  rc=adnn_init_layer_infer(adnn_lib_object,bottom[0],top[0]);      //  HERE or....
   for(n=0;n<max;n++)
     {
-      std::cout << "TT: File:"<<__FILE__<<':'<<__LINE__<< " Forward_gpu Stage4 V2 ["<<n<<"] Calling Init and RunForward for ["<< max << "] blobs" << std::endl;
-      rc=adnn_init_layer_infer(adnn_lib_object,bottom[n],top[n]);  // ... HERE - do I init for 'training' if backward will be run
-      rc=adnn_run_forward();
-      std::cout << "TT: Forward_gpu Stage4  n["<<n<<"] Return Adnn_Run_Conv_Layer =" << rc << std::endl;
+      std::cout << "TT: File:"<<__FILE__<<':'<<__LINE__<< " Forward_gpu Stage5 V3 ["<<n<<"] Calling Init and RunForward for ["<< max << "] blobs" << std::endl;
+      rc=adnn_run_forward(bottom[n],top[n]);
+      std::cout << "TT: Forward_gpu Stage5  n["<<n<<"] Return Adnn_Run_Conv_Layer =" << rc << std::endl;
     }
-  //V2 rc=adnn_term_layer(adnn_lib_object,top[n]); // should this be in loop, or out, if out, what [N] should it use 
+  //rc=adnn_term_layer(adnn_lib_object,top[n]); // should this be in loop, or out, if out, what [N] should it use
+  //I don't think I need to do this as I set the point of mutuable from top blob to node_sink - BUT NOT SURE
  }
 
 // is the 'top' the 'source' and 'bottom' the sink for Backward ??
